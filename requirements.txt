@@ -2,5 +2,5 @@ streamlit
 opencv-python-headless
 numpy
 Pillow
-dashscope>=1.14.0
 requests
+dashscope>=1.19.0
