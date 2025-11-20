@@ -6,21 +6,51 @@ import io
 import requests
 import base64
 import json
+import time
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (百度千帆 V2 最终版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (百度千帆 V1 版)", page_icon="🛋️", layout="wide")
 
 try:
-    # 🚨 核心修改：只读取一个 API Key，并假设它就是 Access Token
+    # 🚨 核心：必须同时读取 API Key (client_id) 和 Secret Key (client_secret)
     API_KEY = st.secrets["BAIDU_API_KEY"]
+    SECRET_KEY = st.secrets["BAIDU_SECRET_KEY"]
 except Exception as e:
-    st.error("❌ 未找到密钥！请在 secrets.toml 中配置 BAIDU_API_KEY")
+    st.error("❌ 配置缺失！请在 secrets.toml 中配置 BAIDU_API_KEY 和 BAIDU_SECRET_KEY")
     st.stop()
 
 # ==========================================
-# 2. 图像处理函数 (不变)
+# 2. 鉴权逻辑 (获取 Access Token)
+# ==========================================
+
+@st.cache_data(ttl=60*60*24*30) 
+def get_access_token(api_key, secret_key):
+    """
+    第一步：使用 AK/SK 获取临时的 Access Token (缓存 30 天)
+    """
+    url = "https://aip.baidubce.com/oauth/2.0/token"
+    params = {
+        "grant_type": "client_credentials",
+        "client_id": api_key,
+        "client_secret": secret_key
+    }
+    try:
+        # 使用 requests 发起 POST 请求
+        response = requests.post(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            return response.json().get("access_token")
+        else:
+            print(f"Token Request Failed: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"Token 获取异常: {e}")
+        return None
+
+# ==========================================
+# 3. 图像处理函数 (本地 CPU)
 # ==========================================
 def process_clean_sketch(uploaded_file):
     """清洗草图"""
@@ -46,16 +76,22 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 3. 百度千帆 API 调用逻辑 (V2 单 Key 鉴权)
+# 4. API 调用逻辑 (核心业务)
 # ==========================================
 
 def call_baidu_sdxl(prompt, control_image):
     """
-    调用百度千帆 Stable-Diffusion-XL (图生图模式) - V2 简化鉴权
+    调用百度千帆 Stable-Diffusion-XL (图生图模式)
     """
-    # 🚨 核心修正：直接使用 API_KEY 作为 URL 参数中的 Access Token
-    url = f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/text2image/sd_xl?access_token={API_KEY}"
+    # 1. 获取 Access Token
+    token = get_access_token(API_KEY, SECRET_KEY)
+    if not token:
+        return None, "无法获取 Access Token，请检查 AK/SK 或权限。"
+
+    # 2. 构造请求 URL (使用 Access Token)
+    url = f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/text2image/sd_xl?access_token={token}"
     
+    # 3. Base64 传输图片
     base64_img = image_to_base64(control_image)
     
     payload = {
@@ -64,8 +100,8 @@ def call_baidu_sdxl(prompt, control_image):
         "size": "1024x1024",
         "steps": 30,
         "n": 1,
-        "image": base64_img, # Base64 图生图输入
-        "strength": 0.75,    # 控制重绘幅度，保持草图结构
+        "image": base64_img, 
+        "strength": 0.75,    
         "sampler_index": "DPM++ SDE Karras"
     }
     
@@ -87,9 +123,9 @@ def call_baidu_sdxl(prompt, control_image):
         return None, f"请求异常: {str(e)}"
 
 # ==========================================
-# 4. 界面逻辑
+# 5. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (百度千帆 V2 最终版)")
+st.title("🛋️ AI 家具设计 (百度千帆 V1/OAuth 版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
@@ -107,7 +143,7 @@ if run_btn and uploaded_file:
             cleaned_img = process_clean_sketch(uploaded_file)
             st.image(cleaned_img, width=200, caption="清洗后线稿")
             
-            st.write("☁️ 调用百度 SDXL (Base64传输)...")
+            st.write("☁️ 调用百度 SDXL (OAuth 鉴权)...")
             img_b64, error = call_baidu_sdxl(prompt_text, cleaned_img)
             
             if error:
