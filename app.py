@@ -7,13 +7,11 @@ import os
 import requests
 import dashscope
 from dashscope import ImageSynthesis
-import sys
-# ⚠️ 注意：这次我们不导入 dashscope.file，避免 ModuleNotFoundError
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (阿里云最终修复版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (诊断版)", page_icon="🛋️", layout="wide")
 
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
@@ -23,25 +21,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 图像处理函数 (本地 CPU)
-# ==========================================
-def process_clean_sketch(uploaded_file):
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    binary = cv2.adaptiveThreshold(
-        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
-    )
-    return Image.fromarray(binary)
-
-def process_multiply(render_img, sketch_img):
-    if render_img.size != sketch_img.size:
-        sketch_img = sketch_img.resize(render_img.size)
-    render_img = render_img.convert("RGB")
-    sketch_img = sketch_img.convert("RGB")
-    return ImageChops.multiply(render_img, sketch_img)
-
-# ==========================================
-# 3. 核心：手动 HTTP 文件上传函数 (修复版)
+# 2. 核心：手动 HTTP 文件上传函数 (返回详细错误)
 # ==========================================
 def upload_file_to_aliyun(api_key, file_path):
     """
@@ -54,13 +34,10 @@ def upload_file_to_aliyun(api_key, file_path):
     }
     
     try:
-        # 使用 with open 确保文件关闭
         with open(file_path, 'rb') as file_data:
-            # 1. files 字典只包含文件本身 (Image/png 确保服务器正确识别)
             files = {
                 'file': (os.path.basename(file_path), file_data, 'image/png')
             }
-            # 2. data 字典包含非文件字段 (purpose)
             data = {'purpose': 'file-extract'} 
             
             response = requests.post(
@@ -71,39 +48,38 @@ def upload_file_to_aliyun(api_key, file_path):
                 timeout=60
             )
             
+            # --- 🚨 诊断点：检查状态码并返回详细信息 ---
             if response.status_code == 200:
                 data = response.json()
                 if data.get('status') == 'success':
-                    # 返回的文件对象中包含 URL (OSS 地址)
-                    return data.get('url') 
+                    return data.get('url'), None # 成功返回 URL 和 None 错误
                 else:
-                    return None
+                    # 服务器返回 200，但业务失败
+                    return None, f"上传业务失败: {data.get('message', '未知错误')}"
             else:
-                # 打印出失败的详细信息到后台
-                print(f"HTTP UPLOAD FAILED Status: {response.status_code}, Response: {response.text}")
-                return None
+                # 返回非 200 的 HTTP 错误
+                return None, f"HTTP 错误 ({response.status_code}): {response.text}"
 
     except Exception as e:
-        print(f"Upload Exception: {e}")
-        return None
+        return None, f"网络请求异常: {str(e)}"
 
 # ==========================================
-# 4. 阿里云 API 调用逻辑
+# 3. 阿里云 API 调用逻辑 (使用新的上传函数)
 # ==========================================
 def call_aliyun_wanx(prompt, control_image):
-    # 1. 保存临时文件
     temp_filename = "temp_sketch.png"
     control_image.save(temp_filename)
     
     try:
-        # --- 🚨 核心步骤：上传文件获取 URL ---
+        # --- 🚨 捕获详细错误信息 ---
         with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
-            sketch_cloud_url = upload_file_to_aliyun(api_key, temp_filename)
+            sketch_cloud_url, upload_error = upload_file_to_aliyun(api_key, temp_filename)
             
-        if not sketch_cloud_url:
-            return None, "文件上传失败，请检查 Key 权限或网络。"
+        if upload_error:
+            # 如果上传失败，直接返回错误
+            return None, upload_error
             
-        # 2. 发起生成请求
+        # 2. 发起生成请求 (略)
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
@@ -114,19 +90,18 @@ def call_aliyun_wanx(prompt, control_image):
             size='1024*1024'
         )
         
-        # 3. 处理结果
         if rsp.status_code == 200:
             return rsp.output.results[0].url, None
         else:
-            return None, f"阿里云报错: {rsp.code} - {rsp.message}"
+            return None, f"阿里云生成报错: {rsp.code} - {rsp.message}"
             
     except Exception as e:
-        return None, f"SDK 异常: {str(e)}"
+        return None, f"SDK 异常 (生成阶段): {str(e)}"
 
 # ==========================================
-# 5. 界面逻辑
+# 4. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (阿里云最终修复版)")
+st.title("🛋️ AI 家具设计 (最终诊断版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
@@ -145,11 +120,13 @@ if run_btn and uploaded_file:
             st.image(cleaned_img, width=200, caption="清洗后线稿")
             
             st.write("☁️ 调用阿里云生成...")
+            # 这里的 img_url 会是 OSS 地址
             img_url, error = call_aliyun_wanx(prompt_text, cleaned_img)
             
             if error:
                 status.update(label="生成失败", state="error")
-                st.error(error)
+                # 🚨 打印出详细的错误信息
+                st.error(f"失败原因：{error}") 
                 st.stop()
             
             st.write("📥 下载渲染图...")
