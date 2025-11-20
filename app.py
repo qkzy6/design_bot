@@ -49,13 +49,13 @@ def process_multiply(render_img, sketch_img):
 
 def get_file_url_from_id(api_key, file_id):
     """
-    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'success'。
+    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'SUCCESS'。
     """
     status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
     headers = {'Authorization': f'Bearer {api_key}'}
     
-    # 循环查询状态，最多等待 20 次 (共 40 秒)
-    for i in range(20): 
+    # 🚨 修正点：延长循环时间到 45 次 (共 90 秒)
+    for i in range(45): 
         time.sleep(2) # 每次查询间隔 2 秒
         
         response = requests.get(status_url, headers=headers, timeout=20)
@@ -63,11 +63,11 @@ def get_file_url_from_id(api_key, file_id):
         if response.status_code == 200:
             data = response.json()
             
+            current_status = data.get('status')
+            
             # 1. 检查最终 URL (如果存在，直接成功)
             if data.get('url'): 
                 return data['url'], None 
-            
-            current_status = data.get('status')
             
             # 2. 检查失败状态
             if current_status == 'FAILED': 
@@ -77,14 +77,14 @@ def get_file_url_from_id(api_key, file_id):
             if current_status in ['RUNNING', 'PENDING', 'PROCESSING', None]:
                 continue
             
-            # 4. 如果状态是非预期状态，且已经等待了一段时间
+            # 4. 如果状态是非预期状态，且已等待一段时间
             if i > 5 and current_status not in ['SUCCESS', 'RUNNING', 'PENDING', 'PROCESSING']:
                 return None, f"文件处理异常。服务器信息: {response.text}"
         
         else:
             return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
     
-    return None, "文件处理超时，请重试。"
+    return None, "文件处理超时 (已等待 90 秒)，请重试。"
 
 
 def upload_file_to_aliyun(api_key, file_path):
@@ -187,13 +187,7 @@ if run_btn and uploaded_file:
                 st.error(error)
                 st.stop()
             
-            # --- ✨ 新增调试代码：打印最终下载链接 ---
-            st.code(f"OSS 下载链接 (用于诊断)：{img_url}")
-            st.write("------------------------------------")
-            # ----------------------------------------------
-            
             st.write("📥 下载渲染图...")
-            # Python requests.get 应该能成功下载这个链接
             generated_response = requests.get(img_url)
             generated_img = Image.open(io.BytesIO(generated_response.content))
             
@@ -204,9 +198,6 @@ if run_btn and uploaded_file:
 
         st.image(final_img, caption="最终效果图", use_column_width=True)
         
-        # ... (下载按钮代码不变)
-        
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button("⬇️ 下载高清原图", data=buf.getvalue(), file_name="design_final.jpg", mime="image/jpeg", type="primary")
-
