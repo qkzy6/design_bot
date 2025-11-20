@@ -1,144 +1,93 @@
 import streamlit as st
-import cv2
-import numpy as np
-from PIL import Image, ImageChops
-import io
-import requests
-import base64
-import json
+import dashscope
+from dashscope import ImageSynthesis
+import os
+import tempfile
+from PIL import Image
 
-# ==========================================
-# 1. 基础配置
-# ==========================================
-st.set_page_config(page_title="AI 家具设计 (FLUX版)", page_icon="🛋️", layout="wide")
+# 1. 页面基础设置
+st.set_page_config(page_title="阿里云家具渲染器", layout="wide")
+st.title("🛋️ 家具草图渲染 (阿里云通义万相)")
 
-try:
-    API_KEY = st.secrets["SILICONFLOW_API_KEY"]
-except Exception as e:
-    st.error("❌ 未找到密钥！请在 secrets.toml 中配置 SILICONFLOW_API_KEY")
+# 2. 安全加载密钥
+if "DASHSCOPE_API_KEY" in st.secrets:
+    dashscope.api_key = st.secrets["DASHSCOPE_API_KEY"]
+else:
+    st.error("❌ 未找到密钥，请在 .streamlit/secrets.toml 配置 DASHSCOPE_API_KEY")
     st.stop()
 
-# ==========================================
-# 2. 图像处理函数 (本地 CPU)
-# ==========================================
-def process_clean_sketch(uploaded_file):
-    """清洗草图"""
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    binary = cv2.adaptiveThreshold(
-        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
+# 3. 侧边栏设置
+with st.sidebar:
+    st.header("参数设置")
+    # 通义万相对中文理解很好，所以默认用中文
+    prompt = st.text_area(
+        "描述家具细节 (支持中文):",
+        value="新中式实木沙发，米白色坐垫，柔和的室内光线，高品质，4k分辨率，室内设计杂志风格",
+        height=100
     )
-    return Image.fromarray(binary)
-
-def process_multiply(render_img, sketch_img):
-    """正片叠底"""
-    if render_img.size != sketch_img.size:
-        sketch_img = sketch_img.resize(render_img.size)
-    render_img = render_img.convert("RGB")
-    sketch_img = sketch_img.convert("RGB")
-    return ImageChops.multiply(render_img, sketch_img)
-
-def image_to_base64(pil_image):
-    buffered = io.BytesIO()
-    pil_image.save(buffered, format="JPEG") # 转为 JPEG 压缩体积
-    return base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-# ==========================================
-# 3. 硅基流动 API 调用 (回归 SDXL 1.0)
-# ==========================================
-def call_siliconflow_sd(prompt, control_image):
-    
-    url = "https://api.siliconflow.cn/v1/images/generations"
-    
-    base64_str = image_to_base64(control_image)
-    image_data = f"data:image/jpeg;base64,{base64_str}"
-    
-    payload = {
-        # 🚨 核心修改：使用最经典的 SDXL 1.0 Base 模型
-        # 这个模型非常稳定，绝对不会报“不存在”
-        "model": "stabilityai/sdxl-turbo",
-        
-        "prompt": prompt + ", interior design, furniture, masterpiece, 8k, photorealistic, soft lighting",
-        "image": image_data, 
-        "image_size": "1024x1024",
-        "num_inference_steps": 30, # SDXL 需要多一点步数
-        "guidance_scale": 7.5,
-        "prompt_enhancement": False
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    try:
-        print(f"正在请求模型: {payload['model']}...")
-        response = requests.post(url, json=payload, headers=headers, timeout=60)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return data['data'][0]['url'], None
-        else:
-            # 打印出完整的报错信息，方便看
-            return None, f"API 报错 ({response.status_code}): {response.text}"
-            
-    except Exception as e:
-        return None, f"网络请求异常: {str(e)}"
-
-# ==========================================
-# 4. 界面逻辑
-# ==========================================
-st.title("🛋️ AI 家具设计 (FLUX版)")
-st.caption("Powered by SiliconFlow & FLUX.1-schnell")
-
-col_input, col_process = st.columns([1, 1.5])
-
-with col_input:
-    uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
-    prompt_text = st.text_area(
-        "设计描述", 
-        "modern minimalist wardrobe, walnut wood texture, soft lighting, 8k resolution", 
-        height=120
+    # 风格选择 (这是通义万相的一个特色参数)
+    style = st.selectbox(
+        "生成风格:",
+        options=["<auto>", "realistic", "oil_painting", "watercolor", "sketch"],
+        index=1,
+        format_func=lambda x: "自动" if x == "<auto>" else "写实照片" if x == "realistic" else x
     )
-    run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
-if run_btn and uploaded_file:
-    with col_process:
-        with st.status("AI 正在工作中...", expanded=True) as status:
-            
-            st.write("🧹 正在清洗草图...")
-            uploaded_file.seek(0)
-            cleaned_img = process_clean_sketch(uploaded_file)
-            st.image(cleaned_img, width=200, caption="清洗后线稿")
-            
-            st.write("☁️ 调用云端 GPU (FLUX)...")
-            img_url, error = call_siliconflow_sd(prompt_text, cleaned_img)
-            
-            if error:
-                status.update(label="生成失败", state="error")
-                st.error(error)
-                st.stop()
-            
-            st.write("📥 下载渲染图...")
-            generated_response = requests.get(img_url)
-            generated_img = Image.open(io.BytesIO(generated_response.content))
-            
-            st.write("🎨 合成尺寸标注...")
-            final_img = process_multiply(generated_img, cleaned_img)
-            
-            status.update(label="✅ 全部完成！", state="complete")
+# 4. 图片上传处理
+uploaded_file = st.file_uploader("上传草图 (JPG/PNG)", type=["jpg", "png", "jpeg"])
 
-        st.image(final_img, caption="最终效果图", use_column_width=True)
-        
-        buf = io.BytesIO()
-        final_img.save(buf, format="JPEG", quality=95)
-        st.download_button(
-            "⬇️ 下载高清原图", 
-            data=buf.getvalue(), 
-            file_name="design_final.jpg", 
-            mime="image/jpeg", 
-            type="primary"
-        )
+if uploaded_file:
+    col1, col2 = st.columns(2)
+    
+    # 保存临时文件供 SDK 读取
+    # Streamlit 的文件在内存里，阿里云SDK需要一个 file:// 路径
+    tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".png") 
+    tfile.write(uploaded_file.getvalue())
+    temp_file_path = tfile.name # 获取临时文件的绝对路径
 
+    with col1:
+        st.subheader("原始草图")
+        st.image(uploaded_file, use_container_width=True)
 
+    with col2:
+        st.subheader("渲染结果")
+        run_btn = st.button("🚀 开始渲染 (阿里云)", type="primary")
 
+        if run_btn:
+            try:
+                with st.spinner("正在请求阿里云通义万相..."):
+                    
+                    # 构造文件协议路径
+                    local_file_url = f"file://{temp_file_path}"
+
+                    # 调用阿里云 API
+                    resp = ImageSynthesis.call(
+                        model="wanx-sketch-to-image-v1",
+                        prompt=prompt,
+                        sketch_image_url=local_file_url,
+                        style=style if style != "<auto>" else None,
+                        size='1024*1024',
+                        n=1
+                    )
+
+                    # 处理返回结果
+                    if resp.status_code == 200:
+                        # 获取结果图片 URL
+                        if resp.output and resp.output.results:
+                            result_url = resp.output.results[0]['url']
+                            st.image(result_url, caption="通义万相渲染结果", use_container_width=True)
+                            st.success("渲染完成！")
+                        else:
+                            st.warning("API 返回成功但没有图片数据。")
+                    else:
+                        # 错误处理：提取错误信息
+                        st.error(f"API 调用失败: {resp.code}")
+                        st.error(f"错误信息: {resp.message}")
+
+            except Exception as e:
+                st.error(f"发生系统错误: {str(e)}")
+            
+            finally:
+                # 清理临时文件，保持环境整洁
+                if os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
