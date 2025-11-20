@@ -1,17 +1,24 @@
 import streamlit as st
-import cv2
-import numpy as np
+import cv2  # <--- 必须有
+import numpy as np  # <--- 必须有
 from PIL import Image, ImageChops
 import io
 import os
 import requests
 import dashscope
 from dashscope import ImageSynthesis
+import json
+import base64
+import hmac
+import hashlib
+import uuid
+import urllib.parse
+import sys
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (诊断版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (最终修复版)", page_icon="🛋️", layout="wide")
 
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
@@ -21,12 +28,32 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 核心：手动 HTTP 文件上传函数 (返回详细错误)
+# 2. 图像处理函数 (本地 CPU)
+# ==========================================
+def process_clean_sketch(uploaded_file):
+    """清洗草图：去底色，提取黑白线条"""
+    # 这里的 np.asarray 和 cv2.imdecode 依赖顶部的导入！
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+    
+    binary = cv2.adaptiveThreshold(
+        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
+    )
+    return Image.fromarray(binary)
+
+def process_multiply(render_img, sketch_img):
+    """正片叠底：把线稿叠回去"""
+    if render_img.size != sketch_img.size:
+        sketch_img = sketch_img.resize(render_img.size)
+    render_img = render_img.convert("RGB")
+    sketch_img = sketch_img.convert("RGB")
+    return ImageChops.multiply(render_img, sketch_img)
+
+# ==========================================
+# 3. 阿里云 API 调用 (无 SDK File 依赖)
 # ==========================================
 def upload_file_to_aliyun(api_key, file_path):
-    """
-    手动构造 HTTP 请求，将文件上传到阿里云的 /files 接口，获取 OSS URL。
-    """
+    """手动构造 HTTP 请求，将文件上传到阿里云的 /files 接口，获取 OSS URL。"""
     upload_url = "https://dashscope.aliyuncs.com/api/v1/files"
     
     headers = {
@@ -48,42 +75,36 @@ def upload_file_to_aliyun(api_key, file_path):
                 timeout=60
             )
             
-            # --- 🚨 诊断点：检查状态码并返回详细信息 ---
             if response.status_code == 200:
                 data = response.json()
                 if data.get('status') == 'success':
-                    return data.get('url'), None # 成功返回 URL 和 None 错误
+                    return data.get('url'), None
                 else:
-                    # 服务器返回 200，但业务失败
                     return None, f"上传业务失败: {data.get('message', '未知错误')}"
             else:
-                # 返回非 200 的 HTTP 错误
                 return None, f"HTTP 错误 ({response.status_code}): {response.text}"
 
     except Exception as e:
         return None, f"网络请求异常: {str(e)}"
 
-# ==========================================
-# 3. 阿里云 API 调用逻辑 (使用新的上传函数)
-# ==========================================
 def call_aliyun_wanx(prompt, control_image):
+    # 1. 保存临时文件
     temp_filename = "temp_sketch.png"
     control_image.save(temp_filename)
     
     try:
-        # --- 🚨 捕获详细错误信息 ---
+        # 修复点：通过 HTTP 上传文件，绕过 SDK 依赖
         with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
             sketch_cloud_url, upload_error = upload_file_to_aliyun(api_key, temp_filename)
             
         if upload_error:
-            # 如果上传失败，直接返回错误
             return None, upload_error
             
-        # 2. 发起生成请求 (略)
+        # 2. 发起生成请求
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
-                'image': sketch_cloud_url, # 使用 OSS URL
+                'image': sketch_cloud_url,
                 'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
             },
             n=1,
@@ -96,12 +117,12 @@ def call_aliyun_wanx(prompt, control_image):
             return None, f"阿里云生成报错: {rsp.code} - {rsp.message}"
             
     except Exception as e:
-        return None, f"SDK 异常 (生成阶段): {str(e)}"
+        return None, f"SDK 异常: {str(e)}"
 
 # ==========================================
 # 4. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (最终诊断版)")
+st.title("🛋️ AI 家具设计 (阿里云最终修复版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
@@ -120,13 +141,11 @@ if run_btn and uploaded_file:
             st.image(cleaned_img, width=200, caption="清洗后线稿")
             
             st.write("☁️ 调用阿里云生成...")
-            # 这里的 img_url 会是 OSS 地址
             img_url, error = call_aliyun_wanx(prompt_text, cleaned_img)
             
             if error:
                 status.update(label="生成失败", state="error")
-                # 🚨 打印出详细的错误信息
-                st.error(f"失败原因：{error}") 
+                st.error(error)
                 st.stop()
             
             st.write("📥 下载渲染图...")
