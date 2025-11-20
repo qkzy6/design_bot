@@ -187,7 +187,13 @@ if run_btn and uploaded_file:
                 st.error(error)
                 st.stop()
             
+            # --- ✨ 新增调试代码：打印最终下载链接 ---
+            st.code(f"OSS 下载链接 (用于诊断)：{img_url}")
+            st.write("------------------------------------")
+            # ----------------------------------------------
+            
             st.write("📥 下载渲染图...")
+            # Python requests.get 应该能成功下载这个链接
             generated_response = requests.get(img_url)
             generated_img = Image.open(io.BytesIO(generated_response.content))
             
@@ -198,6 +204,9 @@ if run_btn and uploaded_file:
 
         st.image(final_img, caption="最终效果图", use_column_width=True)
         
+        # ... (下载按钮代码不变)
+        
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button("⬇️ 下载高清原图", data=buf.getvalue(), file_name="design_final.jpg", mime="image/jpeg", type="primary")
+
