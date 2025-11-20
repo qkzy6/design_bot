@@ -14,7 +14,7 @@ import json
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (调试版)", page_icon="🐞", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (V1标准版)", page_icon="🛋️", layout="wide")
 
 try:
     ACCESS_KEY = st.secrets["LIBLIB_ACCESS_KEY"]
@@ -72,33 +72,35 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 4. API 调用 (含调试信息)
+# 4. API 调用 (V1 标准接口)
 # ==========================================
 def call_liblib_api(prompt, control_image):
-    # --- 尝试 1: 使用 WebUI 接口 (基于你的文档截图) ---
     domain = "https://api.liblib.art"
-    submit_uri = "/api/generate/webui/text2img"
     
-    # 准备数据
+    # --- ✅ 修正 1: 使用 V1 标准路径 ---
+    submit_uri = "/api/www/v1/generation/image"
+    
     base64_img = image_to_base64(control_image)
+    
+    # --- ✅ 修正 2: 使用 V1 标准参数 (全下划线 snake_case) ---
+    # V1 文档规定：generate_params -> controlnet -> units
     payload = {
-        "templateUuid": MODEL_UUID, 
-        "generateParams": {
+        "template_uuid": MODEL_UUID, 
+        "generate_params": {
             "prompt": prompt + ", interior design, furniture, best quality, 8k",
             "steps": 25,
             "width": 1024,
             "height": 1024,
-            "imgCount": 1,
-            "controlNet": [
-                {
-                    "enabled": True,
-                    "module": "canny", 
-                    # 尝试使用通用模型名，防止模型不匹配
-                    "model": "control_v11p_sd15_canny", 
-                    "image": base64_img,
-                    "weight": 0.8
-                }
-            ]
+            "img_count": 1,
+            "controlnet": {
+                "units": [
+                    {
+                        "type": "canny", 
+                        "weight": 0.8,
+                        "image_base64": base64_img
+                    }
+                ]
+            }
         }
     }
     
@@ -108,49 +110,47 @@ def call_liblib_api(prompt, control_image):
     try:
         response = requests.post(full_url, headers=headers, json=payload)
         
-        # --- 🐞 遇到错误时，返回详细调试信息 ---
+        # --- 🐞 调试信息 ---
         if response.status_code != 200:
-            debug_info = {
+            return None, {
                 "URL": full_url,
                 "Status": response.status_code,
-                "Headers Sent": headers,
                 "Response Text": response.text,
-                "Payload": str(payload)[:200] + "..." # 只截取一部分防止太长
+                "Payload": str(payload)[:200] + "..." 
             }
-            return None, debug_info # 返回 debug 字典
             
         data = response.json()
         if data.get('code') != 0:
             return None, f"API 业务报错: {data.get('msg')}"
             
-        generate_uuid = data['data']['generateUuid']
+        generate_uuid = data['data']['generate_uuid']
         
     except Exception as e:
         return None, f"请求异常: {e}"
     
-    # --- 轮询 ---
-    status_uri = "/api/generate/webui/status"
+    # --- 2. 轮询结果 ---
+    status_uri = "/api/www/v1/generation/status"
     progress_bar = st.progress(0, text="任务已提交...")
     
     for i in range(60):
         time.sleep(2)
-        progress_bar.progress((i + 1) / 60)
+        progress_bar.progress((i + 1) / 60, text="AI 渲染中...")
         
         check_headers = get_liblib_headers(status_uri) 
         try:
             check_res = requests.get(
                 domain + status_uri, 
                 headers=check_headers, 
-                params={"generateUuid": generate_uuid}
+                params={"generate_uuid": generate_uuid}
             )
             res_data = check_res.json()
-            status = res_data.get('data', {}).get('generateStatus')
+            status = res_data.get('data', {}).get('status')
             
             if status == 1:
                 progress_bar.progress(1.0, text="渲染完成！")
-                return res_data['data']['images'][0]['imageUrl'], None
-            elif status == 2: 
-                return None, f"生成失败"
+                return res_data['data']['images'][0]['image_url'], None
+            elif status == -1: 
+                return None, f"服务端生成失败"
         except:
             pass
             
@@ -159,7 +159,7 @@ def call_liblib_api(prompt, control_image):
 # ==========================================
 # 5. 界面
 # ==========================================
-st.title("🛋️ AI 家具设计 (调试模式)")
+st.title("🛋️ AI 家具设计 (V1标准版)")
 
 uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
 prompt_text = st.text_area("设计描述", "modern wardrobe, walnut wood, 8k", height=100)
@@ -175,20 +175,13 @@ if run_btn and uploaded_file:
     img_url, error = call_liblib_api(prompt_text, cleaned_img)
     
     if error:
-        st.error("❌ 生成失败！请查看下方调试信息：")
-        
-        # --- 🐞 核心：展示调试信息 ---
-        if isinstance(error, dict): # 如果返回的是 debug 字典
-            with st.expander("🐞 点击查看 API 报错详情 (截图发给我)", expanded=True):
-                st.write(f"**Status Code:** {error['Status']}")
-                st.write(f"**Request URL:** `{error['URL']}`")
-                st.write("**Response Body (服务器返回的内容):**")
-                st.code(error['Response Text'], language="json")
-                st.write("**Payload Preview:**")
-                st.code(error['Payload'])
+        st.error("❌ 生成失败！")
+        if isinstance(error, dict):
+            with st.expander("🐞 点击查看报错详情", expanded=True):
+                st.write(f"**Status:** {error['Status']}")
+                st.code(error['Response Text'])
         else:
             st.write(error)
-        
         st.stop()
     
     st.success("✅ 成功！")
@@ -196,3 +189,7 @@ if run_btn and uploaded_file:
     generated_img = Image.open(io.BytesIO(generated_response.content))
     final_img = process_multiply(generated_img, cleaned_img)
     st.image(final_img, caption="最终效果", use_column_width=True)
+    
+    buf = io.BytesIO()
+    final_img.save(buf, format="JPEG", quality=95)
+    st.download_button("⬇️ 下载", buf.getvalue(), "design.jpg", "image/jpeg")
