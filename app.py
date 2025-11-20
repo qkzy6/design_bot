@@ -9,7 +9,7 @@ import dashscope
 from dashscope import ImageSynthesis
 import sys
 import json
-import time # <-- 必须引入，用于等待文件处理
+# 🚨 注意：不再需要 time 库
 
 # ==========================================
 # 1. 基础配置
@@ -27,7 +27,6 @@ except Exception as e:
 # 2. 图像处理函数 (本地 CPU)
 # ==========================================
 def process_clean_sketch(uploaded_file):
-    """清洗草图：去底色，提取黑白线条"""
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
     binary = cv2.adaptiveThreshold(
@@ -36,7 +35,6 @@ def process_clean_sketch(uploaded_file):
     return Image.fromarray(binary)
 
 def process_multiply(render_img, sketch_img):
-    """正片叠底：把线稿叠回去"""
     if render_img.size != sketch_img.size:
         sketch_img = sketch_img.resize(render_img.size)
     render_img = render_img.convert("RGB")
@@ -44,72 +42,35 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 核心：文件操作 (两步法)
+# 3. 核心：文件上传 (只上传，不查询)
 # ==========================================
-
-def get_file_url_from_id(api_key, file_id):
-    """
-    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'success'。
-    """
-    status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
-    headers = {'Authorization': f'Bearer {api_key}'}
-    
-    # 循环查询状态，最多等待 20 秒
-    for _ in range(10): 
-        time.sleep(2) # 每次查询间隔 2 秒
-        
-        response = requests.get(status_url, headers=headers, timeout=20)
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('url') and data.get('status') == 'success':
-                return data['url'], None # 成功获取 URL
-            elif data.get('status') == 'processing':
-                # 文件仍在处理中，继续等待
-                continue 
-            else:
-                # 状态不是 success，也不是 processing，视为失败
-                return None, f"文件处理失败: {data.get('message', response.text)}"
-        else:
-            return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
-    
-    return None, "文件处理超时，请检查阿里云后台。"
-
 
 def upload_file_to_aliyun(api_key, file_path):
     """
-    第一步：上传文件并获取 file_id。
+    一步到位：上传文件，并直接从返回的 JSON 中提取 OSS URL。
     """
     upload_url = "https://dashscope.aliyuncs.com/api/v1/files"
-    headers = {
-        'Authorization': f'Bearer {api_key}'
-    }
+    headers = {'Authorization': f'Bearer {api_key}'}
     
     try:
         with open(file_path, 'rb') as file_data:
-            files = {
-                'file': (os.path.basename(file_path), file_data, 'image/png')
-            }
+            files = {'file': (os.path.basename(file_path), file_data, 'image/png')}
             data = {'purpose': 'image-generation'} 
             
             response = requests.post(
-                upload_url, 
-                headers=headers, 
-                data=data,          
-                files=files,        
-                timeout=60
+                upload_url, headers=headers, data=data, files=files, timeout=60
             )
             
             if response.status_code == 200:
                 data = response.json()
-                # 🚨 修正点：从成功的上传 JSON 中解析 file_id
-                if data.get('data') and data['data'].get('uploaded_files'):
-                    file_id = data['data']['uploaded_files'][0]['file_id']
-                    
-                    # 立即调用第二步：查询 URL
-                    return get_file_url_from_id(api_key, file_id)
+                uploaded_files = data.get('data', {}).get('uploaded_files')
+                
+                # 🚨 关键修正：直接从 POST 成功的响应中提取 URL
+                if uploaded_files and uploaded_files[0].get('url'):
+                    # 返回 OSS URL，进入下一步生成
+                    return uploaded_files[0]['url'], None 
                 else:
-                    return None, f"上传成功但解析 file_id 失败: {response.text}"
+                    return None, f"上传成功但未找到 URL (Response: {response.text})"
             else:
                 return None, f"HTTP 错误 ({response.status_code}): {response.text}"
 
@@ -125,9 +86,9 @@ def call_aliyun_wanx(prompt, control_image):
     control_image.save(temp_filename)
     
     try:
-        # --- 🚨 核心步骤：上传文件并获取 URL ---
+        # --- 核心步骤：上传文件获取 URL ---
         with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
-            # upload_file_to_aliyun 现在会执行两步操作并返回最终 URL
+            # 这一步将返回 OSS URL 或错误信息
             sketch_cloud_url, upload_error = upload_file_to_aliyun(api_key, temp_filename)
             
         if upload_error:
@@ -155,12 +116,11 @@ def call_aliyun_wanx(prompt, control_image):
 # ==========================================
 # 5. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (阿里云终极稳定版)")
+st.title("🛋️ AI 家具设计 (阿里云最终修复版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
-    # 修正：st.file_uploader
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
     prompt_text = st.text_area("设计描述", "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", height=120)
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
