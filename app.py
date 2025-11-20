@@ -6,6 +6,7 @@ import io
 import os
 import dashscope
 from dashscope import ImageSynthesis
+from dashscope.file import File  # 👈 记得这里加了新引用
 import requests
 
 # ==========================================
@@ -59,27 +60,27 @@ def call_aliyun_wanx(prompt, control_image):
     temp_filename = "temp_sketch_input.png"
     control_image.save(temp_filename)
     
-    # 获取绝对路径，加上 file:// 头
-    local_file_uri = f"file://{os.path.abspath(temp_filename)}"
-
     try:
-        # --- 🚨 核心修正：参数扁平化传递 ---
-        # 文档参考：https://help.aliyun.com/zh/dashscope/developer-reference/api-details-9
+        # --- 🚨 核心修复：先上传，后调用 ---
+        # 阿里云画图 API 需要网络 URL，不能直接读本地文件
+        with st.spinner("☁️ 正在上传草图到阿里云..."):
+            upload_url_obj = File.upload(temp_filename)
+            sketch_cloud_url = upload_url_obj.url
+        
+        # 2. 发起生成请求
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             prompt=prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线",
-            sketch_image_url=local_file_uri,  # 关键修正：直接作为参数
+            sketch_image_url=sketch_cloud_url, # 使用上传后的 URL
             n=1,
             size='1024*1024'
         )
         
         # 3. 处理结果
         if rsp.status_code == 200:
-            # 获取图片 URL
             img_url = rsp.output.results[0].url
             return img_url, None
         else:
-            # 报错
             return None, f"阿里云报错: {rsp.code} - {rsp.message}"
             
     except Exception as e:
@@ -114,7 +115,7 @@ if run_btn and uploaded_file:
             st.write("🧹 正在清洗草图...")
             uploaded_file.seek(0)
             cleaned_img = process_clean_sketch(uploaded_file)
-            # 展示一下清洗结果，让用户放心
+            # 展示一下清洗结果
             st.image(cleaned_img, width=200, caption="清洗后线稿")
             
             st.write("☁️ 正在调用阿里云 (通义万相)...")
