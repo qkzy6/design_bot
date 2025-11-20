@@ -49,29 +49,26 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 阿里云 API 调用逻辑
+# 3. 阿里云 API 调用逻辑 (修复版)
 # ==========================================
 def call_aliyun_wanx(prompt, control_image):
     """
     调用通义万相-线稿生图模型
     """
-    # 1. 阿里云 SDK 需要本地文件路径
-    # 我们把清洗好的图片临时存一下
+    # 1. 保存临时文件
     temp_filename = "temp_sketch_input.png"
     control_image.save(temp_filename)
     
-    # 获取绝对路径，并在前面加上 file:// 协议头
+    # 获取绝对路径，加上 file:// 头
     local_file_uri = f"file://{os.path.abspath(temp_filename)}"
 
     try:
-        # 2. 发起生成请求 (同步调用，简单直接)
-        # 文档：https://help.aliyun.com/zh/dashscope/developer-reference/api-details-9
+        # --- 🚨 核心修正：参数扁平化传递 ---
+        # 文档参考：https://help.aliyun.com/zh/dashscope/developer-reference/api-details-9
         rsp = ImageSynthesis.call(
-            model="wanx-sketch-to-image-v1", # 专门的线稿生图模型
-            input={
-                'image': local_file_uri,
-                'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
-            },
+            model="wanx-sketch-to-image-v1", 
+            prompt=prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线",
+            sketch_image_url=local_file_uri,  # 关键修正：直接作为参数
             n=1,
             size='1024*1024'
         )
