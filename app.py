@@ -54,7 +54,7 @@ def get_file_url_from_id(api_key, file_id):
     status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
     headers = {'Authorization': f'Bearer {api_key}'}
     
-    # 🚨 修正点：延长循环时间到 20 次 (共 40 秒)
+    # 循环查询状态，最多等待 20 次 (共 40 秒)
     for i in range(20): 
         time.sleep(2) # 每次查询间隔 2 秒
         
@@ -77,7 +77,7 @@ def get_file_url_from_id(api_key, file_id):
             if current_status in ['RUNNING', 'PENDING', 'PROCESSING', None]:
                 continue
             
-            # 4. 如果状态是非预期状态，且已经等待了一段时间，可能是服务器返回格式错误
+            # 4. 如果状态是非预期状态，且已经等待了一段时间
             if i > 5 and current_status not in ['SUCCESS', 'RUNNING', 'PENDING', 'PROCESSING']:
                 return None, f"文件处理异常。服务器信息: {response.text}"
         
