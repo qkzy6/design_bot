@@ -162,3 +162,4 @@ if run_btn and uploaded_file:
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG")
         st.download_button("⬇️ 下载", data=buf.getvalue(), file_name="design.jpg", mime="image/jpeg", type="primary")
+
