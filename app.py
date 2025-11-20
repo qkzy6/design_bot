@@ -14,7 +14,7 @@ import time
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (同步阻塞版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (最终修复版)", page_icon="🛋️", layout="wide")
 
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
@@ -44,51 +44,17 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 文件操作 (两步法 - 保持不变，这部分需要轮询)
+# 3. 核心：手动 HTTP 文件上传函数
 # ==========================================
-
-def get_file_url_from_id(api_key, file_id):
-    """
-    等待文件处理完毕，返回最终 OSS URL。
-    """
-    status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
-    headers = {'Authorization': f'Bearer {api_key}'}
-    
-    # 文件处理时间通常较短，等待 60 秒足够
-    for i in range(30): 
-        time.sleep(2) 
-        
-        response = requests.get(status_url, headers=headers, timeout=20)
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            if data.get('url'): 
-                return data['url'], None 
-            
-            current_status = data.get('status')
-            
-            if current_status == 'FAILED': 
-                return None, f"文件处理失败。服务器信息: {response.text}"
-            
-            if current_status in ['RUNNING', 'PENDING', 'PROCESSING', None]:
-                continue
-            
-            if i > 5 and current_status not in ['SUCCESS', 'RUNNING', 'PENDING', 'PROCESSING']:
-                return None, f"文件处理异常。服务器信息: {response.text}"
-        
-        else:
-            return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
-    
-    return None, "文件处理超时 (已等待 60 秒)，请重试。"
-
-
 def upload_file_to_aliyun(api_key, file_path):
     """
-    第一步：上传文件并获取 file_id，然后等待文件就绪。
+    手动构造 HTTP 请求，将文件上传到阿里云的 /files 接口，获取 OSS URL。
     """
     upload_url = "https://dashscope.aliyuncs.com/api/v1/files"
-    headers = {'Authorization': f'Bearer {api_key}'}
+    
+    headers = {
+        'Authorization': f'Bearer {api_key}'
+    }
     
     try:
         with open(file_path, 'rb') as file_data:
@@ -96,7 +62,10 @@ def upload_file_to_aliyun(api_key, file_path):
                 'file': (os.path.basename(file_path), file_data, 'image/png')
             }
             data = {'purpose': 'image-generation'} 
-            response = requests.post(upload_url, headers=headers, data=data, files=files, timeout=60)
+            
+            response = requests.post(
+                upload_url, headers=headers, data=data, files=files, timeout=60
+            )
             
             if response.status_code == 200:
                 data = response.json()
@@ -115,49 +84,87 @@ def upload_file_to_aliyun(api_key, file_path):
     except Exception as e:
         return None, f"网络请求异常: {str(e)}"
 
+# --- 文件状态查询函数 (保持不变) ---
+def get_file_url_from_id(api_key, file_id):
+    """
+    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'SUCCESS'。
+    """
+    status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
+    headers = {'Authorization': f'Bearer {api_key}'}
+    
+    for i in range(45): 
+        time.sleep(2)
+        response = requests.get(status_url, headers=headers, timeout=20)
+        
+        if response.status_code == 200:
+            data = response.json()
+            current_status = data.get('status')
+            
+            if data.get('url'): 
+                return data['url'], None 
+            
+            if current_status == 'FAILED': 
+                return None, f"文件处理失败。服务器信息: {response.text}"
+            
+            if current_status in ['RUNNING', 'PENDING', 'PROCESSING', None]:
+                continue
+            
+            if i > 5 and current_status not in ['SUCCESS', 'RUNNING', 'PENDING', 'PROCESSING']:
+                return None, f"文件处理异常。服务器信息: {response.text}"
+        
+        else:
+            return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
+    
+    return None, "文件处理超时 (已等待 90 秒)，请重试。"
+
+
 # ==========================================
-# 4. 阿里云 API 调用 (同步阻塞模式)
+# 4. 阿里云 API 调用逻辑 (已修复 SyntaxError)
 # ==========================================
 def call_aliyun_wanx(prompt, control_image):
-    # 1. 保存临时文件并上传
+    # 1. 保存临时文件
     temp_filename = "temp_sketch.png"
     control_image.save(temp_filename)
     
-    with st.spinner("☁️ 正在上传并等待草图文件就绪..."):
-        sketch_cloud_url, upload_error = upload_file_to_aliyun(api_key, temp_filename)
-        
-    if upload_error:
-        return None, upload_error
-        
-    # 2. 发起生成请求 (同步阻塞)
-    with st.spinner("⏳ 正在等待阿里云 GPU 渲染 (请耐心等待)..."):
-        # 🚨 核心修改：移除 _async=True，使用同步阻塞调用
-        rsp = ImageSynthesis.call(
-            model="wanx-sketch-to-image-v1", 
-            input={
-                'image': sketch_cloud_url,
-                'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
-            },
-            n=1,
-            size='1024*1024'
-        )
-        
-        if rsp.status_code == 200:
-            return rsp.output.results[0].url, None
-        else:
-            return None, f"阿里云生成报错: {rsp.code} - {rsp.message}"
+    # 🚨 修正点：将 try 块包裹住整个 API 交互过程
+    try:
+        # --- 核心步骤：上传文件获取 URL ---
+        with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
+            sketch_cloud_url, upload_error = upload_file_to_aliyun(api_key, temp_filename)
             
+        if upload_error:
+            return None, upload_error
+            
+        # 2. 发起生成请求
+        with st.spinner("⏳ 正在等待阿里云 GPU 渲染..."): # 增加 spinner 提高用户体验
+            rsp = ImageSynthesis.call(
+                model="wanx-sketch-to-image-v1", 
+                input={
+                    'image': sketch_cloud_url,
+                    'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
+                },
+                n=1,
+                size='1024*1024'
+            )
+            
+            if rsp.status_code == 200:
+                return rsp.output.results[0].url, None
+            else:
+                return None, f"阿里云生成报错: {rsp.code} - {rsp.message}"
+                
     except Exception as e:
+        # 统一捕获所有网络、SDK和参数异常
         return None, f"SDK 异常 (生成阶段): {str(e)}"
 
 # ==========================================
 # 5. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (同步稳定版)")
+st.title("🛋️ AI 家具设计 (阿里云最终修复版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
+    # 修正：st.file_uploader 已经是正确的
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
     prompt_text = st.text_area("设计描述", "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", height=120)
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
@@ -180,12 +187,12 @@ if run_btn and uploaded_file:
                 st.stop()
             
             st.write("📥 下载渲染图...")
-            # 🚨 关键修复：强制转换为 HTTPS，解决 ERR_CONNECTION_CLOSED
+            # 最终的下载和合成流程
+            # 确保 img_url 是 https://
             if img_url.startswith("http://"):
                 img_url = img_url.replace("http://", "https://")
-                st.toast("🌐 已将图片链接强制升级为 HTTPS。")
-
-            generated_response = requests.get(img_url)
+                
+            generated_response = requests.get(img_url, timeout=60)
             generated_img = Image.open(io.BytesIO(generated_response.content))
             
             st.write("🎨 合成标注...")
