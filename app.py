@@ -9,12 +9,12 @@ import dashscope
 from dashscope import ImageSynthesis
 import sys
 import json
-import time # <-- 必须引入，用于等待文件处理
+import time
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (终极稳定版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (最终诊断版)", page_icon="🛋️", layout="wide")
 
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
@@ -61,14 +61,16 @@ def get_file_url_from_id(api_key, file_id):
         if response.status_code == 200:
             data = response.json()
             
-            # 检查状态和 URL 字段
-            if data.get('url') and data.get('status') == 'success':
-                return data['url'], None # 成功获取 URL
-            elif data.get('status') == 'processing':
+            current_status = data.get('status')
+            
+            # 🚨 修正：检查状态是否成功/有URL
+            if current_status == 'SUCCESS' and data.get('url'): 
+                return data['url'], None 
+            elif current_status == 'RUNNING':
                 continue # 文件仍在处理中，继续等待
             else:
-                # 状态不是 success, 也不是 processing，可能是 fail
-                return None, f"文件处理失败，状态码：{data.get('status', '未知状态')}"
+                # 如果是其他状态（FAILED, UNKNOWN），立即返回服务器的原始响应
+                return None, f"文件处理失败。服务器信息: {response.text}"
         else:
             return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
     
@@ -97,14 +99,14 @@ def upload_file_to_aliyun(api_key, file_path):
                 data = response.json()
                 uploaded_files = data.get('data', {}).get('uploaded_files')
                 
-                # 提取 file_id (你的 JSON 证明这个是存在的)
+                # 提取 file_id 
                 if uploaded_files and uploaded_files[0].get('file_id'):
                     file_id = uploaded_files[0]['file_id']
                     
                     # 立即调用第二步：查询 URL
                     return get_file_url_from_id(api_key, file_id)
                 else:
-                    return None, f"上传成功但未找到 file_id，解析错误。"
+                    return None, f"上传成功但未找到 file_id。"
             else:
                 return None, f"HTTP 错误 ({response.status_code}): {response.text}"
 
@@ -131,7 +133,7 @@ def call_aliyun_wanx(prompt, control_image):
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
-                'image': sketch_cloud_url, 
+                'image': sketch_cloud_url,
                 'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
             },
             n=1,
