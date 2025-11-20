@@ -214,8 +214,11 @@ if run_btn and uploaded_file:
 
         # 展示结果
         st.image(final_img, caption="最终设计图", use_column_width=True)
+        # ✨✨✨ 新增：针对手机用户的提示 ✨✨✨
+        st.caption("💡 手机用户提示：长按上方图片，选择“添加到照片”或“保存图片”即可直接存入相册。")
 
         # 下载按钮
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
+
         st.download_button("⬇️ 下载图片", buf.getvalue(), "design_final.jpg", "image/jpeg", type="primary")
