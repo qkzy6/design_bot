@@ -4,16 +4,16 @@ import numpy as np
 from PIL import Image, ImageChops
 import io
 import os
-import requests
 import dashscope
 from dashscope import ImageSynthesis
+# 👇 只要 requirements.txt 更新了，这行就不会报错
+from dashscope.file import File 
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (阿里云稳健版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (阿里云官方版)", page_icon="🛋️", layout="wide")
 
-# 读取并设置 API Key
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
     dashscope.api_key = api_key
@@ -22,10 +22,9 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 图像处理函数 (本地 CPU)
+# 2. 图像处理函数
 # ==========================================
 def process_clean_sketch(uploaded_file):
-    """清洗草图"""
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
     binary = cv2.adaptiveThreshold(
@@ -34,7 +33,6 @@ def process_clean_sketch(uploaded_file):
     return Image.fromarray(binary)
 
 def process_multiply(render_img, sketch_img):
-    """正片叠底"""
     if render_img.size != sketch_img.size:
         sketch_img = sketch_img.resize(render_img.size)
     render_img = render_img.convert("RGB")
@@ -42,64 +40,26 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 核心：临时文件上传助手 (tmpfiles.org)
-# ==========================================
-def get_public_url(local_file_path):
-    """
-    将本地文件上传到 tmpfiles.org 获取公网 URL
-    (解决阿里云无法读取本地文件的问题，且不需要安装额外SDK)
-    """
-    url = "https://tmpfiles.org/api/v1/upload"
-    try:
-        with open(local_file_path, 'rb') as f:
-            # 这里的 files 参数名必须是 'file'
-            response = requests.post(url, files={"file": f})
-        
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('status') == 'success':
-                # 原始链接是预览页，阿里云读不到图片
-                page_url = data['data']['url']
-                # 转换为下载直链 (在域名后加 /dl/)
-                direct_url = page_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-                print(f"图片直链: {direct_url}") # 调试打印
-                return direct_url
-            else:
-                st.error(f"图床服务返回错误: {data}")
-                return None
-        else:
-            st.error(f"上传图片失败 (Code {response.status_code})")
-            return None
-            
-    except Exception as e:
-        st.error(f"网络请求异常: {e}")
-        return None
-
-# ==========================================
-# 4. 阿里云 API 调用逻辑
+# 3. 阿里云 API 调用 (官方文件上传)
 # ==========================================
 def call_aliyun_wanx(prompt, control_image):
-    """
-    调用通义万相-线稿生图模型
-    """
     # 1. 保存临时文件
-    temp_filename = "temp_sketch_input.png"
+    temp_filename = "temp_sketch.png"
     control_image.save(temp_filename)
     
     try:
-        # --- 上传到中转服务器 ---
-        with st.spinner("☁️ 正在上传草图到中转服务器..."):
-            sketch_cloud_url = get_public_url(temp_filename)
-            
-        if not sketch_cloud_url:
-            return None, "无法获取图片公网链接，流程终止。"
+        # --- 🚨 核心逻辑：使用官方 SDK 上传 ---
+        # 这会将文件上传到阿里云的临时 OSS，专门给模型读取
+        with st.spinner("☁️ 正在上传草图到阿里云内网..."):
+            # file_url_obj 包含一个以 oss:// 开头的地址
+            file_url_obj = File.upload(temp_filename)
+            sketch_url = file_url_obj.url
             
         # 2. 发起生成请求
-        # 文档：https://help.aliyun.com/zh/dashscope/developer-reference/api-details-9
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             prompt=prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线",
-            sketch_image_url=sketch_cloud_url, # 传入 tmpfiles 的链接
+            sketch_image_url=sketch_url, # 传入官方上传后的 URL
             n=1,
             size='1024*1024'
         )
@@ -112,40 +72,37 @@ def call_aliyun_wanx(prompt, control_image):
             return None, f"阿里云报错: {rsp.code} - {rsp.message}"
             
     except Exception as e:
-        return None, f"SDK 调用异常: {str(e)}"
+        # 如果依然报模块错误，提示用户重启
+        if "dashscope.file" in str(e) or "ImportError" in str(e):
+            return None, "环境版本过低，请点击右下角 'Manage app' -> 'Reboot app'"
+        return None, f"SDK 异常: {str(e)}"
 
 # ==========================================
-# 5. 界面逻辑
+# 4. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (阿里云稳健版)")
+st.title("🛋️ AI 家具设计 (阿里云版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
-    st.markdown("### 1. 上传草图")
-    uploaded_file = st.file_uploader("请上传家具手绘图", type=["jpg", "png", "jpeg"])
-    
-    st.markdown("### 2. 设计要求")
+    uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
     prompt_text = st.text_area(
-        "描述", 
+        "设计描述", 
         "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", 
         height=120
     )
-    
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
 if run_btn and uploaded_file:
     with col_process:
-        st.markdown("### 3. 生成结果")
-        
         with st.status("AI 正在工作中...", expanded=True) as status:
             
-            st.write("🧹 正在清洗草图...")
+            st.write("🧹 清洗草图...")
             uploaded_file.seek(0)
             cleaned_img = process_clean_sketch(uploaded_file)
             st.image(cleaned_img, width=200, caption="清洗后线稿")
             
-            st.write("☁️ 正在调用阿里云 (通义万相)...")
+            st.write("☁️ 调用阿里云生成...")
             img_url, error = call_aliyun_wanx(prompt_text, cleaned_img)
             
             if error:
@@ -157,14 +114,13 @@ if run_btn and uploaded_file:
             generated_response = requests.get(img_url)
             generated_img = Image.open(io.BytesIO(generated_response.content))
             
-            st.write("🎨 正在合成尺寸标注...")
+            st.write("🎨 合成标注...")
             final_img = process_multiply(generated_img, cleaned_img)
             
             status.update(label="✅ 全部完成！", state="complete")
 
         st.image(final_img, caption="最终效果图", use_column_width=True)
         
-        # 下载按钮
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button(
