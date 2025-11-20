@@ -11,7 +11,7 @@ from dashscope import ImageSynthesis
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (阿里云无依赖版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (阿里云稳健版)", page_icon="🛋️", layout="wide")
 
 # 读取并设置 API Key
 try:
@@ -42,26 +42,37 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 核心：临时文件上传助手 (替代 dashscope.file)
+# 3. 核心：临时文件上传助手 (tmpfiles.org)
 # ==========================================
 def get_public_url(local_file_path):
     """
-    将本地文件上传到 file.io 临时网盘，获取公网 URL
+    将本地文件上传到 tmpfiles.org 获取公网 URL
     (解决阿里云无法读取本地文件的问题，且不需要安装额外SDK)
     """
-    url = "https://file.io"
+    url = "https://tmpfiles.org/api/v1/upload"
     try:
         with open(local_file_path, 'rb') as f:
-            # file.io 免费，文件被下载一次后自动删除，非常适合这种临时中转
+            # 这里的 files 参数名必须是 'file'
             response = requests.post(url, files={"file": f})
         
         if response.status_code == 200:
-            return response.json()["link"]
+            data = response.json()
+            if data.get('status') == 'success':
+                # 原始链接是预览页，阿里云读不到图片
+                page_url = data['data']['url']
+                # 转换为下载直链 (在域名后加 /dl/)
+                direct_url = page_url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                print(f"图片直链: {direct_url}") # 调试打印
+                return direct_url
+            else:
+                st.error(f"图床服务返回错误: {data}")
+                return None
         else:
-            print(f"上传失败: {response.text}")
+            st.error(f"上传图片失败 (Code {response.status_code})")
             return None
+            
     except Exception as e:
-        print(f"上传异常: {e}")
+        st.error(f"网络请求异常: {e}")
         return None
 
 # ==========================================
@@ -76,19 +87,19 @@ def call_aliyun_wanx(prompt, control_image):
     control_image.save(temp_filename)
     
     try:
-        # --- 🚨 核心修改：使用通用 HTTP 上传，不依赖 SDK ---
+        # --- 上传到中转服务器 ---
         with st.spinner("☁️ 正在上传草图到中转服务器..."):
             sketch_cloud_url = get_public_url(temp_filename)
             
         if not sketch_cloud_url:
-            return None, "图片上传失败，无法获取公网链接"
+            return None, "无法获取图片公网链接，流程终止。"
             
         # 2. 发起生成请求
         # 文档：https://help.aliyun.com/zh/dashscope/developer-reference/api-details-9
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             prompt=prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线",
-            sketch_image_url=sketch_cloud_url, # 传入 file.io 的链接
+            sketch_image_url=sketch_cloud_url, # 传入 tmpfiles 的链接
             n=1,
             size='1024*1024'
         )
@@ -101,7 +112,7 @@ def call_aliyun_wanx(prompt, control_image):
             return None, f"阿里云报错: {rsp.code} - {rsp.message}"
             
     except Exception as e:
-        return None, f"调用异常: {str(e)}"
+        return None, f"SDK 调用异常: {str(e)}"
 
 # ==========================================
 # 5. 界面逻辑
