@@ -179,7 +179,11 @@ col_input, col_process = st.columns([1, 2])
 
 with col_input:
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
-    prompt_text = st.text_area("设计描述", "modern minimalist wardrobe, walnut texture, soft lighting, 8k", height=100)
+    prompt_text = st.text_area(
+        "设计描述", 
+        "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感，8k分辨率，大师级室内设计", 
+        height=120
+    )
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
 if run_btn and uploaded_file:
@@ -215,6 +219,7 @@ if run_btn and uploaded_file:
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button("⬇️ 下载原图", buf.getvalue(), "design.jpg", "image/jpeg", type="primary")
+
 
 
 
