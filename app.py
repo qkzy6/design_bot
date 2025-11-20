@@ -10,7 +10,7 @@ import json
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (硅基流动版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (FLUX版)", page_icon="🛋️", layout="wide")
 
 try:
     API_KEY = st.secrets["SILICONFLOW_API_KEY"]
@@ -19,9 +19,10 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 图像处理函数
+# 2. 图像处理函数 (本地 CPU)
 # ==========================================
 def process_clean_sketch(uploaded_file):
+    """清洗草图"""
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
     binary = cv2.adaptiveThreshold(
@@ -30,6 +31,7 @@ def process_clean_sketch(uploaded_file):
     return Image.fromarray(binary)
 
 def process_multiply(render_img, sketch_img):
+    """正片叠底"""
     if render_img.size != sketch_img.size:
         sketch_img = sketch_img.resize(render_img.size)
     render_img = render_img.convert("RGB")
@@ -42,28 +44,27 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 3. 硅基流动 API 调用 (SDXL / SD3)
+# 3. 硅基流动 API 调用 (FLUX.1-schnell)
 # ==========================================
 def call_siliconflow_sd(prompt, control_image):
     
-    # 接口地址 (OpenAI 兼容格式)
+    # 接口地址
     url = "https://api.siliconflow.cn/v1/images/generations"
     
-    # 转 Base64 (加前缀)
+    # 转 Base64
     base64_str = image_to_base64(control_image)
     image_data = f"data:image/jpeg;base64,{base64_str}"
     
     # 构造请求
-    # 注意：虽然我们用的是 SD3 模型，但为了利用草图，我们使用“图生图”的逻辑
-    # 提示词里强调“遵循线条”
     payload = {
-        "model": "stabilityai/stable-diffusion-3-5-large", # 最新最强模型
-        "prompt": prompt + ", interior design, furniture, masterpiece, 8k, photorealistic",
-        "image": image_data, # 直接传图片代码，不需要 URL！
+        # 🚨 核心修改：换成了目前免费且强大的 FLUX 模型
+        "model": "black-forest-labs/FLUX.1-schnell",
+        "prompt": prompt + ", interior design, furniture, masterpiece, 8k, photorealistic, cinematic lighting",
+        "image": image_data, 
         "image_size": "1024x1024",
-        "num_inference_steps": 30,
-        "guidance_scale": 7.5,
-        "prompt_enhancement": True # 自动优化提示词
+        "num_inference_steps": 20, # FLUX 只需要很少的步数
+        "guidance_scale": 3.5,      # FLUX 推荐较低的引导值
+        "prompt_enhancement": False
     }
     
     headers = {
@@ -72,12 +73,11 @@ def call_siliconflow_sd(prompt, control_image):
     }
     
     try:
-        print("正在发送请求给硅基流动...")
+        print(f"正在请求模型: {payload['model']}...")
         response = requests.post(url, json=payload, headers=headers, timeout=60)
         
         if response.status_code == 200:
             data = response.json()
-            # 硅基流动返回的是图片 URL
             return data['data'][0]['url'], None
         else:
             return None, f"API 报错 ({response.status_code}): {response.text}"
@@ -88,8 +88,8 @@ def call_siliconflow_sd(prompt, control_image):
 # ==========================================
 # 4. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (硅基流动版)")
-st.caption("Powered by SiliconFlow & Stable Diffusion 3.5")
+st.title("🛋️ AI 家具设计 (FLUX版)")
+st.caption("Powered by SiliconFlow & FLUX.1-schnell")
 
 col_input, col_process = st.columns([1, 1.5])
 
@@ -111,8 +111,7 @@ if run_btn and uploaded_file:
             cleaned_img = process_clean_sketch(uploaded_file)
             st.image(cleaned_img, width=200, caption="清洗后线稿")
             
-            st.write("☁️ 调用云端 GPU (Base64传输)...")
-            # 核心调用
+            st.write("☁️ 调用云端 GPU (FLUX)...")
             img_url, error = call_siliconflow_sd(prompt_text, cleaned_img)
             
             if error:
