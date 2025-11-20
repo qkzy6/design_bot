@@ -26,14 +26,17 @@ except Exception as e:
 # 2. 图像处理函数 (本地 CPU)
 # ==========================================
 def process_clean_sketch(uploaded_file):
+    """清洗草图：去底色，提取黑白线条"""
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+    
     binary = cv2.adaptiveThreshold(
         img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
     )
     return Image.fromarray(binary)
 
 def process_multiply(render_img, sketch_img):
+    """正片叠底：把线稿叠回去"""
     if render_img.size != sketch_img.size:
         sketch_img = sketch_img.resize(render_img.size)
     render_img = render_img.convert("RGB")
@@ -58,7 +61,6 @@ def upload_file_to_aliyun(api_key, file_path):
             files = {
                 'file': (os.path.basename(file_path), file_data, 'image/png')
             }
-            # 🚨 修正点：将用途改为 image-generation
             data = {'purpose': 'image-generation'} 
             
             response = requests.post(
@@ -74,10 +76,8 @@ def upload_file_to_aliyun(api_key, file_path):
                 if data.get('status') == 'success':
                     return data.get('url'), None
                 else:
-                    # 返回业务失败信息
                     return None, f"上传业务失败: {data.get('message', response.text)}" 
             else:
-                # 返回非 200 的 HTTP 错误
                 return None, f"HTTP 错误 ({response.status_code}): {response.text}"
 
     except Exception as e:
@@ -100,11 +100,10 @@ def call_aliyun_wanx(prompt, control_image):
             return None, upload_error
             
         # 2. 发起生成请求
-        # 注意：这里调用的是 SDK 的主函数，它会用我们配置的 Key
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
-                'image': sketch_cloud_url, 
+                'image': sketch_cloud_url,
                 'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
             },
             n=1,
@@ -127,7 +126,8 @@ st.title("🛋️ AI 家具设计 (阿里云最终修复版)")
 col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
-    uploaded_file = st.uploader("上传草图", type=["jpg", "png", "jpeg"])
+    # 🚨 修正点：将 st.uploader 修正为 st.file_uploader
+    uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
     prompt_text = st.text_area("设计描述", "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", height=120)
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
