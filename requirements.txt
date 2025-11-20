@@ -3,3 +3,4 @@ opencv-python-headless
 numpy
 Pillow
 requests
+openai # <--- 新增！我们用这个库来调用百度
