@@ -75,36 +75,39 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 4. API 调用逻辑 (最终修正版)
+# 4. API 调用逻辑 (WebUI 接口 + API 域名)
 # ==========================================
 def call_liblib_api(prompt, control_image):
-    # --- 🚨 修正 1: 域名改回 api.liblib.art ---
+    # --- 🚨 核心修正 1: 域名用 api ---
     domain = "https://api.liblib.art"
     
-    # --- 🚨 修正 2: 路径改为 /generate ---
-    # 这是最标准的 V1 生成接口
-    submit_uri = "/api/www/v1/generation/generate"
+    # --- 🚨 核心修正 2: 路径用 webui ---
+    # 这是你截图里显示的路径，必须配上 api 域名
+    submit_uri = "/api/generate/webui/text2img"
     
     base64_img = image_to_base64(control_image)
     
-    # --- 构造参数 (V1标准) ---
+    # --- 🚨 核心修正 3: 参数结构改回 WebUI 格式 (驼峰命名) ---
+    # WebUI 接口通常要求 templateUuid，而不是 template_uuid
     payload = {
-        "template_uuid": MODEL_UUID, 
-        "generate_params": {
+        "templateUuid": MODEL_UUID, 
+        "generateParams": {
             "prompt": prompt + ", interior design, furniture, best quality, 8k",
-            "steps": 20,
+            "steps": 25,
             "width": 1024,
             "height": 1024,
-            "img_count": 1,
-            "controlnet": {
-                "units": [
-                    {
-                        "type": "canny", 
-                        "weight": 0.8,
-                        "image_base64": base64_img
-                    }
-                ]
-            }
+            "imgCount": 1,
+            "controlNet": [
+                {
+                    "enabled": True,
+                    "module": "canny", 
+                    # 注意：如果是SDXL模型，这里可能需要改成 "diffusers_xl_canny_full"
+                    # 如果报错说模型不匹配，请尝试改这个字段
+                    "model": "control_v11p_sd15_canny", 
+                    "image": base64_img,
+                    "weight": 0.8
+                }
+            ]
         }
     }
     
@@ -117,9 +120,8 @@ def call_liblib_api(prompt, control_image):
         
         response = requests.post(full_url, headers=headers, json=payload)
         
-        # 打印调试信息
         print(f"状态码: {response.status_code}")
-        print(f"返回内容: {response.text}")
+        print(f"返回: {response.text}")
         
         if response.status_code != 200:
             return None, f"提交失败 ({response.status_code}): {response.text}"
@@ -128,13 +130,15 @@ def call_liblib_api(prompt, control_image):
         if data.get('code') != 0:
             return None, f"API 业务报错: {data.get('msg')}"
             
-        generate_uuid = data['data']['generate_uuid']
+        # WebUI 接口返回的字段通常是 generateUuid
+        generate_uuid = data['data']['generateUuid']
         
     except Exception as e:
         return None, f"请求异常: {e}"
     
-    # --- 轮询结果 ---
-    status_uri = "/api/www/v1/generation/status"
+    # --- 2. 轮询结果 ---
+    # WebUI 查询接口
+    status_uri = "/api/generate/webui/status"
     
     progress_bar = st.progress(0, text="☁️ 任务已提交，等待 GPU 响应...")
     
@@ -145,19 +149,21 @@ def call_liblib_api(prompt, control_image):
         check_headers = get_liblib_headers(status_uri) 
         
         try:
+            # WebUI 接口通常把 uuid 放在 params 里
             check_res = requests.get(
                 domain + status_uri, 
                 headers=check_headers, 
-                params={"generate_uuid": generate_uuid}
+                params={"generateUuid": generate_uuid}
             )
             res_data = check_res.json()
             
-            status = res_data.get('data', {}).get('status')
+            # 1=成功 (WebUI 状态码)
+            status = res_data.get('data', {}).get('generateStatus')
             
             if status == 1:
                 progress_bar.progress(1.0, text="渲染完成！")
-                return res_data['data']['images'][0]['image_url'], None
-            elif status == -1:
+                return res_data['data']['images'][0]['imageUrl'], None
+            elif status == 2: # 2=失败
                 return None, f"服务端生成失败"
         except Exception as check_e:
             print(f"轮询出错: {check_e}")
@@ -209,5 +215,6 @@ if run_btn and uploaded_file:
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button("⬇️ 下载原图", buf.getvalue(), "design.jpg", "image/jpeg", type="primary")
+
 
 
