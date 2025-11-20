@@ -10,10 +10,10 @@ import json
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (百度千帆 V2 版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (百度千帆 V2 最终版)", page_icon="🛋️", layout="wide")
 
 try:
-    # 🚨 核心修改：只读取一个 API Key
+    # 🚨 核心修改：只读取一个 API Key，并假设它就是 Access Token
     API_KEY = st.secrets["BAIDU_API_KEY"]
 except Exception as e:
     st.error("❌ 未找到密钥！请在 secrets.toml 中配置 BAIDU_API_KEY")
@@ -46,17 +46,15 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 3. 百度千帆 API 调用逻辑 (核心)
+# 3. 百度千帆 API 调用逻辑 (V2 单 Key 鉴权)
 # ==========================================
 
 def call_baidu_sdxl(prompt, control_image):
     """
-    调用百度千帆 Stable-Diffusion-XL (图生图模式)
-    使用单 API Key 作为 Access Token
+    调用百度千帆 Stable-Diffusion-XL (图生图模式) - V2 简化鉴权
     """
-    # 🚨 核心修改：URL 中直接使用 API_KEY 作为 access_token
-    # 假设 API Key 已经具备访问 SDXL 的权限
-    url = f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/text2image/sd_xl?access_token={API_KEY}"
+    # 🚨 核心修正：直接使用 API_KEY 作为 URL 参数中的 Access Token
+    url = f"[https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/text2image/sd_xl?access_token=](https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/text2image/sd_xl?access_token=){API_KEY}"
     
     base64_img = image_to_base64(control_image)
     
@@ -67,7 +65,7 @@ def call_baidu_sdxl(prompt, control_image):
         "steps": 30,
         "n": 1,
         "image": base64_img, # Base64 图生图输入
-        "strength": 0.75,    
+        "strength": 0.75,    # 控制重绘幅度，保持草图结构
         "sampler_index": "DPM++ SDE Karras"
     }
     
@@ -76,14 +74,12 @@ def call_baidu_sdxl(prompt, control_image):
     }
     
     try:
-        # 移除 token 获取步骤，直接发请求
         response = requests.post(url, headers=headers, data=json.dumps(payload), timeout=60)
         data = response.json()
         
         if "data" in data and len(data["data"]) > 0:
             return data["data"][0]["b64_image"], None
         else:
-            # 捕获权限和业务错误
             return None, f"百度 API 业务报错: {data.get('error_msg', data.get('error_code', str(data)))}"
             
     except Exception as e:
@@ -92,14 +88,14 @@ def call_baidu_sdxl(prompt, control_image):
 # ==========================================
 # 4. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (百度千帆 V2 版)")
+st.title("🛋️ AI 家具设计 (百度千帆 V2 最终版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
     prompt_text = st.text_area("设计描述", "modern wardrobe, walnut wood texture, soft lighting", height=120)
-    run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
+    run_btn = st.button("🚀 开始生成", type="primary", use_container_container_width=True)
 
 if run_btn and uploaded_file:
     with col_process:
@@ -120,6 +116,7 @@ if run_btn and uploaded_file:
             
             st.write("🎨 合成标注...")
             generated_img = Image.open(io.BytesIO(base64.b64decode(img_b64)))
+            
             final_img = process_multiply(generated_img, cleaned_img)
             status.update(label="✅ 完成！", state="complete")
 
