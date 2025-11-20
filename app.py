@@ -20,7 +20,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 图像处理函数 (本地 CPU)
+# 2. 图像处理函数 (不变)
 # ==========================================
 def process_clean_sketch(uploaded_file):
     """清洗草图"""
@@ -51,9 +51,9 @@ def image_to_base64(pil_image):
 
 def call_baidu_sdxl(prompt, control_image):
     """
-    调用百度千帆 Stable-Diffusion-XL (图生图模式)
+    调用百度千帆 Stable-Diffusion-XL (图生图模式) - V2 简化鉴权
     """
-    # 🚨 V2 修正：URL 中直接使用 API_KEY 作为 access_token
+    # 🚨 核心修正：直接使用 API_KEY 作为 URL 参数中的 Access Token
     url = f"https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop/text2image/sd_xl?access_token={API_KEY}"
     
     base64_img = image_to_base64(control_image)
@@ -80,6 +80,7 @@ def call_baidu_sdxl(prompt, control_image):
         if "data" in data and len(data["data"]) > 0:
             return data["data"][0]["b64_image"], None
         else:
+            # 捕获权限和业务错误
             return None, f"百度 API 业务报错: {data.get('error_msg', data.get('error_code', str(data)))}"
             
     except Exception as e:
@@ -95,7 +96,6 @@ col_input, col_process = st.columns([1, 1.5])
 with col_input:
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
     prompt_text = st.text_area("设计描述", "modern wardrobe, walnut wood texture, soft lighting", height=120)
-    # 🚨 修正点：将 use_container_container_width 修正为 use_container_width
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
 if run_btn and uploaded_file:
