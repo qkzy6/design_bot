@@ -103,7 +103,7 @@ def call_liblib_api(prompt, control_image):
                     "module": "canny", 
                     # 注意：如果是SDXL模型，这里可能需要改成 "diffusers_xl_canny_full"
                     # 如果报错说模型不匹配，请尝试改这个字段
-                    "model": "diffusers_xl_canny_full",, 
+                    "model": "diffusers_xl_canny_full",
                     "image": base64_img,
                     "weight": 0.8
                 }
@@ -219,6 +219,7 @@ if run_btn and uploaded_file:
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button("⬇️ 下载原图", buf.getvalue(), "design.jpg", "image/jpeg", type="primary")
+
 
 
 
