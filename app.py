@@ -1,37 +1,46 @@
 import streamlit as st
+import subprocess
+import sys
+import time
+
+# ==========================================
+# 0. 核武器：强制环境修复 (自动安装最新版 SDK)
+# ==========================================
+# 如果发现没有 File 模块，直接在运行通过命令行强制安装
+try:
+    from dashscope.file import File
+except ImportError:
+    st.warning("⚠️ 检测到环境版本过低，正在强制升级阿里云 SDK... (请耐心等待约 30秒)")
+    try:
+        # 强制运行 pip install
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "--upgrade", "dashscope>=1.19.0"])
+        st.success("✅ SDK 升级成功！正在重启应用...")
+        time.sleep(2)
+        st.rerun() # 重启页面
+    except Exception as e:
+        st.error(f"自动升级失败: {e}")
+        st.stop()
+
+# 正常导入其他库
 import cv2
 import numpy as np
 from PIL import Image, ImageChops
 import io
 import os
-import requests
 import dashscope
 from dashscope import ImageSynthesis
-
-# --- 🛡️ 稳健的导入检查 ---
-try:
-    from dashscope.file import File
-    SDK_READY = True
-except ImportError:
-    SDK_READY = False
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (阿里云版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (最终版)", page_icon="🛋️", layout="wide")
 
-# 检查 SDK 版本
-if not SDK_READY:
-    st.error(f"🚨 环境错误：当前 dashscope 版本过低 ({dashscope.__version__})。")
-    st.warning("请执行以下操作修复：\n1. 确保 requirements.txt 里写了 dashscope>=1.19.0\n2. 在 Streamlit 后台删除此 App 并重新部署 (Re-deploy)。")
-    st.stop()
-
-# 读取并设置 API Key
+# 读取密钥
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
     dashscope.api_key = api_key
 except Exception as e:
-    st.error("❌ 未找到密钥！请在 Secrets 中配置 DASHSCOPE_API_KEY")
+    st.error("❌ 未找到密钥！请在 .streamlit/secrets.toml 中配置 DASHSCOPE_API_KEY")
     st.stop()
 
 # ==========================================
@@ -53,16 +62,16 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 阿里云 API 调用
+# 3. 阿里云 API 调用 (含上传)
 # ==========================================
 def call_aliyun_wanx(prompt, control_image):
     # 保存临时文件
-    temp_filename = "temp_sketch.png"
+    temp_filename = "temp_sketch_input.png"
     control_image.save(temp_filename)
     
     try:
-        with st.spinner("☁️ 正在上传草图到阿里云内网..."):
-            # 这里的 File 引用的是开头导入成功的模块
+        with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
+            # 这里的 File 模块现在一定存在了
             file_url_obj = File.upload(temp_filename)
             sketch_url = file_url_obj.url
             
@@ -86,13 +95,17 @@ def call_aliyun_wanx(prompt, control_image):
 # ==========================================
 # 4. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (阿里云版)")
+st.title("🛋️ AI 家具设计 (阿里云官方版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
-    prompt_text = st.text_area("设计描述", "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", height=120)
+    prompt_text = st.text_area(
+        "设计描述", 
+        "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", 
+        height=120
+    )
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
 if run_btn and uploaded_file:
