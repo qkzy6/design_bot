@@ -56,7 +56,7 @@ def call_siliconflow_sd(prompt, control_image):
     payload = {
         # 🚨 核心修改：使用最经典的 SDXL 1.0 Base 模型
         # 这个模型非常稳定，绝对不会报“不存在”
-        "model": "playgroundai/playground-v2.5-1024px-aesthetic",
+        "model": "stabilityai/sdxl-turbo",
         
         "prompt": prompt + ", interior design, furniture, masterpiece, 8k, photorealistic, soft lighting",
         "image": image_data, 
@@ -139,5 +139,6 @@ if run_btn and uploaded_file:
             mime="image/jpeg", 
             type="primary"
         )
+
 
 
