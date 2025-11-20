@@ -93,14 +93,13 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 4. API 调用逻辑 (修正域名和接口)
+# 4. API 调用逻辑 (域名修正版)
 # ==========================================
 def call_liblib_api(prompt, control_image):
-    # --- ✨ 关键修改：修正域名 ✨ ---
-    # 之前是 api.liblib.art，针对 WebUI 接口通常是 www.liblib.art
-    domain = "https://www.liblib.art" 
+    # --- 🚨 核心修正：域名必须是 api 开头 ---
+    domain = "https://api.liblib.art"
     
-    # 接口路径 (基于你的截图)
+    # 接口路径 (基于你的文档截图)
     submit_uri = "/api/generate/webui/text2img"
     
     # 准备图片
@@ -119,7 +118,7 @@ def call_liblib_api(prompt, control_image):
                 {
                     "enabled": True,
                     "module": "canny", 
-                    "model": "control_v11p_sd15_canny", # 如果用SDXL模型，这里可能需要改，先试用这个
+                    "model": "control_v11p_sd15_canny", 
                     "image": base64_img,
                     "weight": 0.8
                 }
@@ -128,17 +127,22 @@ def call_liblib_api(prompt, control_image):
     }
     
     # --- 1. 提交任务 ---
+    # 获取签名 (注意：签名只针对 uri，不包含域名)
     headers = get_liblib_headers(submit_uri)
     
     try:
-        response = requests.post(domain + submit_uri, headers=headers, json=payload)
+        # 拼接完整 URL
+        full_url = domain + submit_uri
+        print(f"正在请求: {full_url}") # 调试打印
         
-        # 打印一下返回，方便调试
+        response = requests.post(full_url, headers=headers, json=payload)
+        
+        # 打印返回内容，如果报错方便排查
         print(f"提交状态: {response.status_code}")
         print(f"提交返回: {response.text}")
         
         if response.status_code != 200:
-            return None, f"提交失败 ({response.status_code}): {response.text}"
+            return None, f"提交失败 ({response.status_code}): {response.text[:200]}..." # 只显示前200字符防止刷屏
             
         data = response.json()
         if data.get('code') != 0:
@@ -158,11 +162,10 @@ def call_liblib_api(prompt, control_image):
         time.sleep(2)
         progress_bar.progress((i + 1) / 60, text=f"☁️ AI 渲染中... ({i*2}s)")
         
-        # 查询接口也要签名
+        # 查询也要签名
         check_headers = get_liblib_headers(status_uri) 
         
         try:
-            # generateUuid 放在 params 里
             check_res = requests.get(
                 domain + status_uri, 
                 headers=check_headers, 
@@ -170,7 +173,8 @@ def call_liblib_api(prompt, control_image):
             )
             res_data = check_res.json()
             
-            # 状态码: 1=成功, 2=失败/超时 (依据常见 WebUI 接口)
+            # 1=成功, 2=失败/超时 (依据文档)
+            # 注意：有些接口返回字段可能是 generateStatus
             status = res_data.get('data', {}).get('generateStatus')
             
             if status == 1:
@@ -247,3 +251,4 @@ if run_btn and uploaded_file:
             "image/jpeg",
             type="primary"
         )
+
