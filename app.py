@@ -4,15 +4,14 @@ import numpy as np
 from PIL import Image, ImageChops
 import io
 import os
+import requests
 import dashscope
 from dashscope import ImageSynthesis
-from dashscope.file import File  # 👈 记得这里加了新引用
-import requests
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (阿里云版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (阿里云无依赖版)", page_icon="🛋️", layout="wide")
 
 # 读取并设置 API Key
 try:
@@ -26,31 +25,47 @@ except Exception as e:
 # 2. 图像处理函数 (本地 CPU)
 # ==========================================
 def process_clean_sketch(uploaded_file):
-    """清洗草图：去底色，提取黑白线条"""
+    """清洗草图"""
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    
-    # 自适应二值化 (C=5 保留细节)
     binary = cv2.adaptiveThreshold(
         img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
     )
     return Image.fromarray(binary)
 
 def process_multiply(render_img, sketch_img):
-    """正片叠底：把线稿叠回去"""
-    # 1. 统一尺寸 (以渲染图为准)
+    """正片叠底"""
     if render_img.size != sketch_img.size:
         sketch_img = sketch_img.resize(render_img.size)
-    
-    # 2. 转换模式
     render_img = render_img.convert("RGB")
     sketch_img = sketch_img.convert("RGB")
-    
-    # 3. 叠底合成
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 阿里云 API 调用逻辑 (修复版)
+# 3. 核心：临时文件上传助手 (替代 dashscope.file)
+# ==========================================
+def get_public_url(local_file_path):
+    """
+    将本地文件上传到 file.io 临时网盘，获取公网 URL
+    (解决阿里云无法读取本地文件的问题，且不需要安装额外SDK)
+    """
+    url = "https://file.io"
+    try:
+        with open(local_file_path, 'rb') as f:
+            # file.io 免费，文件被下载一次后自动删除，非常适合这种临时中转
+            response = requests.post(url, files={"file": f})
+        
+        if response.status_code == 200:
+            return response.json()["link"]
+        else:
+            print(f"上传失败: {response.text}")
+            return None
+    except Exception as e:
+        print(f"上传异常: {e}")
+        return None
+
+# ==========================================
+# 4. 阿里云 API 调用逻辑
 # ==========================================
 def call_aliyun_wanx(prompt, control_image):
     """
@@ -61,17 +76,19 @@ def call_aliyun_wanx(prompt, control_image):
     control_image.save(temp_filename)
     
     try:
-        # --- 🚨 核心修复：先上传，后调用 ---
-        # 阿里云画图 API 需要网络 URL，不能直接读本地文件
-        with st.spinner("☁️ 正在上传草图到阿里云..."):
-            upload_url_obj = File.upload(temp_filename)
-            sketch_cloud_url = upload_url_obj.url
-        
+        # --- 🚨 核心修改：使用通用 HTTP 上传，不依赖 SDK ---
+        with st.spinner("☁️ 正在上传草图到中转服务器..."):
+            sketch_cloud_url = get_public_url(temp_filename)
+            
+        if not sketch_cloud_url:
+            return None, "图片上传失败，无法获取公网链接"
+            
         # 2. 发起生成请求
+        # 文档：https://help.aliyun.com/zh/dashscope/developer-reference/api-details-9
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             prompt=prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线",
-            sketch_image_url=sketch_cloud_url, # 使用上传后的 URL
+            sketch_image_url=sketch_cloud_url, # 传入 file.io 的链接
             n=1,
             size='1024*1024'
         )
@@ -84,12 +101,12 @@ def call_aliyun_wanx(prompt, control_image):
             return None, f"阿里云报错: {rsp.code} - {rsp.message}"
             
     except Exception as e:
-        return None, f"SDK 调用异常: {str(e)}"
+        return None, f"调用异常: {str(e)}"
 
 # ==========================================
-# 4. 界面逻辑
+# 5. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (阿里云引擎)")
+st.title("🛋️ AI 家具设计 (阿里云稳健版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
@@ -115,7 +132,6 @@ if run_btn and uploaded_file:
             st.write("🧹 正在清洗草图...")
             uploaded_file.seek(0)
             cleaned_img = process_clean_sketch(uploaded_file)
-            # 展示一下清洗结果
             st.image(cleaned_img, width=200, caption="清洗后线稿")
             
             st.write("☁️ 正在调用阿里云 (通义万相)...")
