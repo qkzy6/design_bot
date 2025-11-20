@@ -30,17 +30,20 @@ def get_liblib_headers(uri):
     timestamp = str(int(time.time() * 1000))
     signature_nonce = str(uuid.uuid4())
     
-    # 签名原串拼接
+    # 1. 拼接签名原串
     content = '&'.join((uri, timestamp, signature_nonce))
     
+    # 2. HMAC-SHA1 加密
     digest = hmac.new(
         SECRET_KEY.encode('utf-8'), 
         content.encode('utf-8'), 
         hashlib.sha1
     ).digest()
     
+    # 3. Base64 编码
     sign = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('utf-8')
     
+    # 4. 构造请求头
     headers = {
         "Content-Type": "application/json",
         "AccessKey": ACCESS_KEY,
@@ -56,7 +59,7 @@ def get_liblib_headers(uri):
 def process_clean_sketch(uploaded_file):
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    # 参数优化：C=5 保留更多线条细节
+    # C=5 保留更多细节，防止线条丢失
     binary = cv2.adaptiveThreshold(
         img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
     )
@@ -75,24 +78,22 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 4. API 调用逻辑 (WebUI 接口 + API 域名)
+# 4. API 调用逻辑 (WebUI 接口 + SDXL参数)
 # ==========================================
 def call_liblib_api(prompt, control_image):
-    # --- 🚨 核心修正 1: 域名用 api ---
+    # --- 域名 ---
     domain = "https://api.liblib.art"
     
-    # --- 🚨 核心修正 2: 路径用 webui ---
-    # 这是你截图里显示的路径，必须配上 api 域名
+    # --- 接口路径 (WebUI) ---
     submit_uri = "/api/generate/webui/text2img"
     
     base64_img = image_to_base64(control_image)
     
-    # --- 🚨 核心修正 3: 参数结构改回 WebUI 格式 (驼峰命名) ---
-    # WebUI 接口通常要求 templateUuid，而不是 template_uuid
+    # --- 构造参数 (WebUI 格式) ---
     payload = {
         "templateUuid": MODEL_UUID, 
         "generateParams": {
-            "prompt": prompt + ", interior design, furniture, best quality, 8k",
+            "prompt": prompt + ", interior design, furniture, best quality, 8k, photorealistic",
             "steps": 25,
             "width": 1024,
             "height": 1024,
@@ -101,8 +102,7 @@ def call_liblib_api(prompt, control_image):
                 {
                     "enabled": True,
                     "module": "canny", 
-                    # 注意：如果是SDXL模型，这里可能需要改成 "diffusers_xl_canny_full"
-                    # 如果报错说模型不匹配，请尝试改这个字段
+                    # ⚠️ 注意：针对 Juggernaut XL 这种 SDXL 模型，使用此模型名
                     "model": "diffusers_xl_canny_full",
                     "image": base64_img,
                     "weight": 0.8
@@ -116,12 +116,11 @@ def call_liblib_api(prompt, control_image):
     
     try:
         full_url = domain + submit_uri
-        print(f"正在请求: {full_url}") 
+        print(f"Request URL: {full_url}")
         
         response = requests.post(full_url, headers=headers, json=payload)
         
-        print(f"状态码: {response.status_code}")
-        print(f"返回: {response.text}")
+        print(f"Status Code: {response.status_code}")
         
         if response.status_code != 200:
             return None, f"提交失败 ({response.status_code}): {response.text}"
@@ -130,7 +129,7 @@ def call_liblib_api(prompt, control_image):
         if data.get('code') != 0:
             return None, f"API 业务报错: {data.get('msg')}"
             
-        # WebUI 接口返回的字段通常是 generateUuid
+        # WebUI 接口通常返回 generateUuid
         generate_uuid = data['data']['generateUuid']
         
     except Exception as e:
@@ -149,7 +148,6 @@ def call_liblib_api(prompt, control_image):
         check_headers = get_liblib_headers(status_uri) 
         
         try:
-            # WebUI 接口通常把 uuid 放在 params 里
             check_res = requests.get(
                 domain + status_uri, 
                 headers=check_headers, 
@@ -157,28 +155,32 @@ def call_liblib_api(prompt, control_image):
             )
             res_data = check_res.json()
             
-            # 1=成功 (WebUI 状态码)
+            # 1=成功
             status = res_data.get('data', {}).get('generateStatus')
             
             if status == 1:
                 progress_bar.progress(1.0, text="渲染完成！")
                 return res_data['data']['images'][0]['imageUrl'], None
             elif status == 2: # 2=失败
-                return None, f"服务端生成失败"
+                return None, f"服务端生成失败 (请检查 ControlNet 模型名是否匹配)"
         except Exception as check_e:
             print(f"轮询出错: {check_e}")
             pass
             
     return None, "等待超时 (60秒未完成)"
+
 # ==========================================
 # 5. 界面逻辑
 # ==========================================
 st.title("🛋️ AI 家具设计工作流")
+st.info("模式: Sketch -> Clean -> SDXL Render -> Multiply")
 
 col_input, col_process = st.columns([1, 2])
 
 with col_input:
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
+    
+    # ✨ 已替换为通用中文描述
     prompt_text = st.text_area(
         "设计描述", 
         "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感，8k分辨率，大师级室内设计", 
@@ -195,14 +197,12 @@ if run_btn and uploaded_file:
             cleaned_img = process_clean_sketch(uploaded_file)
             st.image(cleaned_img, width=200, caption="清洗后")
             
-            st.write("☁️ 调用 LiblibAI (标准接口)...")
+            st.write("☁️ 调用 LiblibAI (WebUI接口)...")
             img_url, error = call_liblib_api(prompt_text, cleaned_img)
             
             if error:
                 status.update(label="生成失败", state="error")
                 st.error(error)
-                # 打印出完整的错误信息以便调试
-                print(error)
                 st.stop()
             
             st.write("📥 下载渲染图...")
@@ -218,10 +218,4 @@ if run_btn and uploaded_file:
         
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
-        st.download_button("⬇️ 下载原图", buf.getvalue(), "design.jpg", "image/jpeg", type="primary")
-
-
-
-
-
-
+        st.download_button("⬇️ 下载原图", buf.getvalue(), "design_final.jpg", "image/jpeg", type="primary")
