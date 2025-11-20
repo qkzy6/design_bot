@@ -75,25 +75,24 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 4. API 调用逻辑 (切换至标准 V1 接口)
+# 4. API 调用逻辑 (OpenAPI 修正版)
 # ==========================================
 def call_liblib_api(prompt, control_image):
-    # --- ✨ 修正 1: 使用标准 API 域名 ---
-    domain = "https://api.liblib.art"
+    # --- 🚨 修正 1: 使用 openapi 域名 ---
+    domain = "https://openapi.liblib.art"
     
-    # --- ✨ 修正 2: 使用标准 V1 接口路径 ---
-    # 这个接口比 WebUI 接口更稳定，也是大多数开发者使用的
+    # --- 🚨 修正 2: 标准 V1 接口路径 ---
     submit_uri = "/api/www/v1/generation/image"
     
     base64_img = image_to_base64(control_image)
     
-    # --- ✨ 修正 3: 参数改为下划线格式 (snake_case) ---
-    # 标准接口要求 template_uuid 而不是 templateUuid
+    # --- 🚨 修正 3: 确保参数使用下划线命名 (snake_case) ---
+    # 这是一个通用的 Payload 结构，适用于大多数 Liblib 模型
     payload = {
         "template_uuid": MODEL_UUID, 
         "generate_params": {
             "prompt": prompt + ", interior design, furniture, best quality, 8k",
-            "steps": 25,
+            "steps": 20,
             "width": 1024,
             "height": 1024,
             "img_count": 1,
@@ -109,16 +108,17 @@ def call_liblib_api(prompt, control_image):
         }
     }
     
-    # 生成签名 (注意：签名只包含路径部分)
+    # 生成签名 (注意：签名只针对 uri，不包含域名)
     headers = get_liblib_headers(submit_uri)
     
     try:
-        # 打印调试信息 (出现在后台日志里)
-        print(f"正在请求: {domain + submit_uri}")
+        full_url = domain + submit_uri
+        print(f"正在请求: {full_url}") 
         
-        response = requests.post(domain + submit_uri, headers=headers, json=payload)
+        response = requests.post(full_url, headers=headers, json=payload)
         
-        # --- ✨ 修正 4: 详细的错误输出 ---
+        print(f"状态码: {response.status_code}")
+        
         if response.status_code != 200:
             return None, f"提交失败 ({response.status_code}): {response.text}"
             
@@ -131,7 +131,7 @@ def call_liblib_api(prompt, control_image):
     except Exception as e:
         return None, f"请求异常: {e}"
     
-    # --- 轮询结果 ---
+    # --- 2. 轮询结果 ---
     status_uri = "/api/www/v1/generation/status"
     
     progress_bar = st.progress(0, text="☁️ 任务已提交，等待 GPU 响应...")
@@ -140,9 +140,11 @@ def call_liblib_api(prompt, control_image):
         time.sleep(2)
         progress_bar.progress((i + 1) / 60, text=f"☁️ AI 渲染中... ({i*2}s)")
         
+        # 查询也要签名
         check_headers = get_liblib_headers(status_uri) 
         
         try:
+            # generate_uuid 作为参数传递
             check_res = requests.get(
                 domain + status_uri, 
                 headers=check_headers, 
@@ -150,19 +152,19 @@ def call_liblib_api(prompt, control_image):
             )
             res_data = check_res.json()
             
-            # 状态码: 1=成功 (依据标准 V1 文档)
+            # 状态码: 1=成功
             status = res_data.get('data', {}).get('status')
             
             if status == 1:
                 progress_bar.progress(1.0, text="渲染完成！")
                 return res_data['data']['images'][0]['image_url'], None
             elif status == -1: # 失败
-                return None, "服务端生成失败，请检查模型是否支持 ControlNet"
-        except:
+                return None, f"服务端生成失败: {res_data}"
+        except Exception as check_e:
+            print(f"轮询出错: {check_e}")
             pass
             
     return None, "等待超时 (60秒未完成)"
-
 # ==========================================
 # 5. 界面逻辑
 # ==========================================
@@ -208,3 +210,4 @@ if run_btn and uploaded_file:
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button("⬇️ 下载原图", buf.getvalue(), "design.jpg", "image/jpeg", type="primary")
+
