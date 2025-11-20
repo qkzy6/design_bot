@@ -9,11 +9,12 @@ import dashscope
 from dashscope import ImageSynthesis
 import sys
 import json
+import time # <-- 必须引入，用于等待文件处理
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (阿里云最终修复版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (终极稳定版)", page_icon="🛋️", layout="wide")
 
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
@@ -29,7 +30,6 @@ def process_clean_sketch(uploaded_file):
     """清洗草图：去底色，提取黑白线条"""
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    
     binary = cv2.adaptiveThreshold(
         img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
     )
@@ -44,14 +44,43 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 核心：手动 HTTP 文件上传函数 (最终修复版)
+# 3. 核心：文件操作 (两步法)
 # ==========================================
+
+def get_file_url_from_id(api_key, file_id):
+    """
+    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'success'。
+    """
+    status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
+    headers = {'Authorization': f'Bearer {api_key}'}
+    
+    # 循环查询状态，最多等待 20 秒
+    for _ in range(10): 
+        time.sleep(2) # 每次查询间隔 2 秒
+        
+        response = requests.get(status_url, headers=headers, timeout=20)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('url') and data.get('status') == 'success':
+                return data['url'], None # 成功获取 URL
+            elif data.get('status') == 'processing':
+                # 文件仍在处理中，继续等待
+                continue 
+            else:
+                # 状态不是 success，也不是 processing，视为失败
+                return None, f"文件处理失败: {data.get('message', response.text)}"
+        else:
+            return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
+    
+    return None, "文件处理超时，请检查阿里云后台。"
+
+
 def upload_file_to_aliyun(api_key, file_path):
     """
-    手动构造 HTTP 请求，将文件上传到阿里云的 /files 接口，获取 OSS URL。
+    第一步：上传文件并获取 file_id。
     """
     upload_url = "https://dashscope.aliyuncs.com/api/v1/files"
-    
     headers = {
         'Authorization': f'Bearer {api_key}'
     }
@@ -73,10 +102,14 @@ def upload_file_to_aliyun(api_key, file_path):
             
             if response.status_code == 200:
                 data = response.json()
-                if data.get('status') == 'success':
-                    return data.get('url'), None
+                # 🚨 修正点：从成功的上传 JSON 中解析 file_id
+                if data.get('data') and data['data'].get('uploaded_files'):
+                    file_id = data['data']['uploaded_files'][0]['file_id']
+                    
+                    # 立即调用第二步：查询 URL
+                    return get_file_url_from_id(api_key, file_id)
                 else:
-                    return None, f"上传业务失败: {data.get('message', response.text)}" 
+                    return None, f"上传成功但解析 file_id 失败: {response.text}"
             else:
                 return None, f"HTTP 错误 ({response.status_code}): {response.text}"
 
@@ -92,8 +125,9 @@ def call_aliyun_wanx(prompt, control_image):
     control_image.save(temp_filename)
     
     try:
-        # --- 🚨 核心步骤：上传文件获取 URL ---
+        # --- 🚨 核心步骤：上传文件并获取 URL ---
         with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
+            # upload_file_to_aliyun 现在会执行两步操作并返回最终 URL
             sketch_cloud_url, upload_error = upload_file_to_aliyun(api_key, temp_filename)
             
         if upload_error:
@@ -103,7 +137,7 @@ def call_aliyun_wanx(prompt, control_image):
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
-                'image': sketch_cloud_url,
+                'image': sketch_cloud_url, 
                 'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
             },
             n=1,
@@ -121,12 +155,12 @@ def call_aliyun_wanx(prompt, control_image):
 # ==========================================
 # 5. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (阿里云最终修复版)")
+st.title("🛋️ AI 家具设计 (阿里云终极稳定版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
-    # 🚨 修正点：将 st.uploader 修正为 st.file_uploader
+    # 修正：st.file_uploader
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
     prompt_text = st.text_area("设计描述", "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", height=120)
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
