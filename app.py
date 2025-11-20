@@ -44,26 +44,25 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 3. 硅基流动 API 调用 (FLUX.1-schnell)
+# 3. 硅基流动 API 调用 (回归 SDXL 1.0)
 # ==========================================
 def call_siliconflow_sd(prompt, control_image):
     
-    # 接口地址
     url = "https://api.siliconflow.cn/v1/images/generations"
     
-    # 转 Base64
     base64_str = image_to_base64(control_image)
     image_data = f"data:image/jpeg;base64,{base64_str}"
     
-    # 构造请求
     payload = {
-        # 🚨 核心修改：换成了目前免费且强大的 FLUX 模型
-        "model": "black-forest-labs/FLUX.1-schnell",
-        "prompt": prompt + ", interior design, furniture, masterpiece, 8k, photorealistic, cinematic lighting",
+        # 🚨 核心修改：使用最经典的 SDXL 1.0 Base 模型
+        # 这个模型非常稳定，绝对不会报“不存在”
+        "model": "stabilityai/stable-diffusion-xl-base-1.0",
+        
+        "prompt": prompt + ", interior design, furniture, masterpiece, 8k, photorealistic, soft lighting",
         "image": image_data, 
         "image_size": "1024x1024",
-        "num_inference_steps": 20, # FLUX 只需要很少的步数
-        "guidance_scale": 3.5,      # FLUX 推荐较低的引导值
+        "num_inference_steps": 30, # SDXL 需要多一点步数
+        "guidance_scale": 7.5,
         "prompt_enhancement": False
     }
     
@@ -80,6 +79,7 @@ def call_siliconflow_sd(prompt, control_image):
             data = response.json()
             return data['data'][0]['url'], None
         else:
+            # 打印出完整的报错信息，方便看
             return None, f"API 报错 ({response.status_code}): {response.text}"
             
     except Exception as e:
@@ -139,3 +139,4 @@ if run_btn and uploaded_file:
             mime="image/jpeg", 
             type="primary"
         )
+
