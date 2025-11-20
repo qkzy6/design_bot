@@ -49,13 +49,13 @@ def process_multiply(render_img, sketch_img):
 
 def get_file_url_from_id(api_key, file_id):
     """
-    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'SUCCESS'。
+    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'success'。
     """
     status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
     headers = {'Authorization': f'Bearer {api_key}'}
     
-    # 循环查询状态，最多等待 10 次 (约 20 秒)
-    for i in range(10): 
+    # 🚨 修正点：延长循环时间到 20 次 (共 40 秒)
+    for i in range(20): 
         time.sleep(2) # 每次查询间隔 2 秒
         
         response = requests.get(status_url, headers=headers, timeout=20)
@@ -63,16 +63,24 @@ def get_file_url_from_id(api_key, file_id):
         if response.status_code == 200:
             data = response.json()
             
+            # 1. 检查最终 URL (如果存在，直接成功)
+            if data.get('url'): 
+                return data['url'], None 
+            
             current_status = data.get('status')
             
-            # 🚨 修正点：检查大写的 SUCCESS 和 RUNNING 状态
-            if current_status == 'SUCCESS' and data.get('url'): 
-                return data['url'], None 
-            elif current_status in ['RUNNING', 'PENDING']:
-                continue 
-            else:
-                # 如果是 FAILED 或其他未知状态
-                return None, f"文件处理失败。状态: {current_status}。原始信息: {data.get('message', data.get('code'))}"
+            # 2. 检查失败状态
+            if current_status == 'FAILED': 
+                return None, f"文件处理失败。服务器信息: {response.text}"
+            
+            # 3. 如果状态是 RUNNING/PENDING/空，继续等待
+            if current_status in ['RUNNING', 'PENDING', 'PROCESSING', None]:
+                continue
+            
+            # 4. 如果状态是非预期状态，且已经等待了一段时间，可能是服务器返回格式错误
+            if i > 5 and current_status not in ['SUCCESS', 'RUNNING', 'PENDING', 'PROCESSING']:
+                return None, f"文件处理异常。服务器信息: {response.text}"
+        
         else:
             return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
     
@@ -101,7 +109,7 @@ def upload_file_to_aliyun(api_key, file_path):
                 data = response.json()
                 uploaded_files = data.get('data', {}).get('uploaded_files')
                 
-                # 提取 file_id
+                # 提取 file_id 
                 if uploaded_files and uploaded_files[0].get('file_id'):
                     file_id = uploaded_files[0]['file_id']
                     
@@ -135,7 +143,7 @@ def call_aliyun_wanx(prompt, control_image):
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
-                'image': sketch_cloud_url, 
+                'image': sketch_cloud_url,
                 'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
             },
             n=1,
@@ -190,6 +198,6 @@ if run_btn and uploaded_file:
 
         st.image(final_img, caption="最终效果图", use_column_width=True)
         
-        buf = io.BytesBytesIO()
+        buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
         st.download_button("⬇️ 下载高清原图", data=buf.getvalue(), file_name="design_final.jpg", mime="image/jpeg", type="primary")
