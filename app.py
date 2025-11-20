@@ -7,12 +7,13 @@ import os
 import requests
 import dashscope
 from dashscope import ImageSynthesis
-# ⚠️ 注意：我们不再导入 dashscope.file，避免 ModuleNotFoundError
+import sys
+# ⚠️ 注意：这次我们不导入 dashscope.file，避免 ModuleNotFoundError
 
 # ==========================================
 # 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="AI 家具设计 (终极 HTTP 版)", page_icon="🛋️", layout="wide")
+st.set_page_config(page_title="AI 家具设计 (阿里云最终修复版)", page_icon="🛋️", layout="wide")
 
 try:
     api_key = st.secrets["DASHSCOPE_API_KEY"]
@@ -22,7 +23,25 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 核心：手动 HTTP 文件上传函数 (绕过 SDK 错误)
+# 2. 图像处理函数 (本地 CPU)
+# ==========================================
+def process_clean_sketch(uploaded_file):
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+    binary = cv2.adaptiveThreshold(
+        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
+    )
+    return Image.fromarray(binary)
+
+def process_multiply(render_img, sketch_img):
+    if render_img.size != sketch_img.size:
+        sketch_img = sketch_img.resize(render_img.size)
+    render_img = render_img.convert("RGB")
+    sketch_img = sketch_img.convert("RGB")
+    return ImageChops.multiply(render_img, sketch_img)
+
+# ==========================================
+# 3. 核心：手动 HTTP 文件上传函数 (修复版)
 # ==========================================
 def upload_file_to_aliyun(api_key, file_path):
     """
@@ -34,47 +53,42 @@ def upload_file_to_aliyun(api_key, file_path):
         'Authorization': f'Bearer {api_key}'
     }
     
-    # 构造 multipart/form-data 请求体
-    files = {
-        'file': (os.path.basename(file_path), open(file_path, 'rb'), 'image/png'),
-        'purpose': (None, 'image_file_extract') # 声明文件用途
-    }
-    
     try:
-        response = requests.post(upload_url, headers=headers, files=files, timeout=60)
-        
-        if response.status_code == 200 and response.json().get('status') == 'success':
-            # 返回的文件对象中包含一个 URL 字段 (即 OSS 地址)
-            return response.json()['url'] 
-        else:
-            return None
+        # 使用 with open 确保文件关闭
+        with open(file_path, 'rb') as file_data:
+            # 1. files 字典只包含文件本身 (Image/png 确保服务器正确识别)
+            files = {
+                'file': (os.path.basename(file_path), file_data, 'image/png')
+            }
+            # 2. data 字典包含非文件字段 (purpose)
+            data = {'purpose': 'file-extract'} 
             
+            response = requests.post(
+                upload_url, 
+                headers=headers, 
+                data=data,          
+                files=files,        
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'success':
+                    # 返回的文件对象中包含 URL (OSS 地址)
+                    return data.get('url') 
+                else:
+                    return None
+            else:
+                # 打印出失败的详细信息到后台
+                print(f"HTTP UPLOAD FAILED Status: {response.status_code}, Response: {response.text}")
+                return None
+
     except Exception as e:
-        print(f"HTTP UPLOAD FAILED: {e}")
+        print(f"Upload Exception: {e}")
         return None
 
 # ==========================================
-# 3. 图像处理函数 (本地 CPU)
-# ==========================================
-def process_clean_sketch(uploaded_file):
-    """清洗草图"""
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-    binary = cv2.adaptiveThreshold(
-        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
-    )
-    return Image.fromarray(binary)
-
-def process_multiply(render_img, sketch_img):
-    """正片叠底"""
-    if render_img.size != sketch_img.size:
-        sketch_img = sketch_img.resize(render_img.size)
-    render_img = render_img.convert("RGB")
-    sketch_img = sketch_img.convert("RGB")
-    return ImageChops.multiply(render_img, sketch_img)
-
-# ==========================================
-# 4. 阿里云 API 调用 (无 SDK File 依赖)
+# 4. 阿里云 API 调用逻辑
 # ==========================================
 def call_aliyun_wanx(prompt, control_image):
     # 1. 保存临时文件
@@ -82,18 +96,18 @@ def call_aliyun_wanx(prompt, control_image):
     control_image.save(temp_filename)
     
     try:
-        # --- 🚨 核心修复：通过 HTTP 上传文件，绕过 SDK 依赖 ---
+        # --- 🚨 核心步骤：上传文件获取 URL ---
         with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
-            sketch_url = upload_file_to_aliyun(api_key, temp_filename)
+            sketch_cloud_url = upload_file_to_aliyun(api_key, temp_filename)
             
-        if not sketch_url:
-            return None, "文件上传至阿里云失败，请检查 Key 或网络。"
+        if not sketch_cloud_url:
+            return None, "文件上传失败，请检查 Key 权限或网络。"
             
-        # 2. 发起生成请求 (使用 OSS URL)
+        # 2. 发起生成请求
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
-                'image': sketch_url,
+                'image': sketch_cloud_url, # 使用 OSS URL
                 'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
             },
             n=1,
@@ -107,7 +121,6 @@ def call_aliyun_wanx(prompt, control_image):
             return None, f"阿里云报错: {rsp.code} - {rsp.message}"
             
     except Exception as e:
-        # 如果是文件上传后立刻删除失败，这里也会出错。
         return None, f"SDK 异常: {str(e)}"
 
 # ==========================================
@@ -119,11 +132,7 @@ col_input, col_process = st.columns([1, 1.5])
 
 with col_input:
     uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
-    prompt_text = st.text_area(
-        "设计描述", 
-        "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", 
-        height=120
-    )
+    prompt_text = st.text_area("设计描述", "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感", height=120)
     run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
 if run_btn and uploaded_file:
