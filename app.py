@@ -9,7 +9,7 @@ import dashscope
 from dashscope import ImageSynthesis
 import sys
 import json
-# 🚨 注意：不再需要 time 库
+import time # <-- 必须引入，用于等待文件处理
 
 # ==========================================
 # 1. 基础配置
@@ -42,19 +42,51 @@ def process_multiply(render_img, sketch_img):
     return ImageChops.multiply(render_img, sketch_img)
 
 # ==========================================
-# 3. 核心：文件上传 (只上传，不查询)
+# 3. 核心：文件操作 (两步法)
 # ==========================================
+
+def get_file_url_from_id(api_key, file_id):
+    """
+    第二步：根据 file_id 查询文件的最终 OSS URL，直到文件状态变为 'success'。
+    """
+    status_url = f"https://dashscope.aliyuncs.com/api/v1/files/{file_id}"
+    headers = {'Authorization': f'Bearer {api_key}'}
+    
+    # 循环查询状态，最多等待 10 次 (约 20 秒)
+    for _ in range(10): 
+        time.sleep(2) 
+        
+        response = requests.get(status_url, headers=headers, timeout=20)
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # 检查状态和 URL
+            if data.get('url') and data.get('status') == 'success':
+                return data['url'], None # 成功获取 URL
+            elif data.get('status') == 'processing':
+                continue # 仍在处理中，继续等待
+            else:
+                # 状态不是 success, 可能是 fail
+                return None, f"文件处理失败: {data.get('message', response.text)}"
+        else:
+            return None, f"文件状态查询 HTTP 错误 ({response.status_code}): {response.text}"
+    
+    return None, "文件处理超时，请重试。"
+
 
 def upload_file_to_aliyun(api_key, file_path):
     """
-    一步到位：上传文件，并直接从返回的 JSON 中提取 OSS URL。
+    第一步：上传文件并获取 file_id。
     """
     upload_url = "https://dashscope.aliyuncs.com/api/v1/files"
     headers = {'Authorization': f'Bearer {api_key}'}
     
     try:
         with open(file_path, 'rb') as file_data:
-            files = {'file': (os.path.basename(file_path), file_data, 'image/png')}
+            files = {
+                'file': (os.path.basename(file_path), file_data, 'image/png')
+            }
             data = {'purpose': 'image-generation'} 
             
             response = requests.post(
@@ -65,12 +97,14 @@ def upload_file_to_aliyun(api_key, file_path):
                 data = response.json()
                 uploaded_files = data.get('data', {}).get('uploaded_files')
                 
-                # 🚨 关键修正：直接从 POST 成功的响应中提取 URL
-                if uploaded_files and uploaded_files[0].get('url'):
-                    # 返回 OSS URL，进入下一步生成
-                    return uploaded_files[0]['url'], None 
+                # 提取 file_id (你的 JSON 证明这个是存在的)
+                if uploaded_files and uploaded_files[0].get('file_id'):
+                    file_id = uploaded_files[0]['file_id']
+                    
+                    # 立即调用第二步：查询 URL
+                    return get_file_url_from_id(api_key, file_id)
                 else:
-                    return None, f"上传成功但未找到 URL (Response: {response.text})"
+                    return None, f"上传成功但未找到 file_id。"
             else:
                 return None, f"HTTP 错误 ({response.status_code}): {response.text}"
 
@@ -86,19 +120,18 @@ def call_aliyun_wanx(prompt, control_image):
     control_image.save(temp_filename)
     
     try:
-        # --- 核心步骤：上传文件获取 URL ---
+        # --- 🚨 核心步骤：上传文件并获取 URL ---
         with st.spinner("☁️ 正在上传草图到阿里云 OSS..."):
-            # 这一步将返回 OSS URL 或错误信息
             sketch_cloud_url, upload_error = upload_file_to_aliyun(api_key, temp_filename)
             
         if upload_error:
             return None, upload_error
             
-        # 2. 发起生成请求
+        # 2. 发起生成请求 (使用 OSS URL)
         rsp = ImageSynthesis.call(
             model="wanx-sketch-to-image-v1", 
             input={
-                'image': sketch_cloud_url, 
+                'image': sketch_cloud_url, # 传入 OSS URL
                 'prompt': prompt + ", 室内设计, 家具, 8k分辨率, 杰作, 高清材质, 柔和光线"
             },
             n=1,
@@ -116,7 +149,7 @@ def call_aliyun_wanx(prompt, control_image):
 # ==========================================
 # 5. 界面逻辑
 # ==========================================
-st.title("🛋️ AI 家具设计 (阿里云最终修复版)")
+st.title("🛋️ AI 家具设计 (阿里云终极稳定版)")
 
 col_input, col_process = st.columns([1, 1.5])
 
