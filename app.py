@@ -15,6 +15,7 @@ import uuid
 # ==========================================
 st.set_page_config(page_title="AI 家具设计全自动生成器", page_icon="🛋️", layout="wide")
 
+# 从 secrets.toml 读取配置
 try:
     ACCESS_KEY = st.secrets["LIBLIB_ACCESS_KEY"]
     SECRET_KEY = st.secrets["LIBLIB_SECRET_KEY"]
@@ -27,21 +28,27 @@ except Exception as e:
 # 2. 核心：签名生成函数 (HMAC-SHA1)
 # ==========================================
 def get_liblib_headers(uri):
+    """
+    根据 LiblibAI 文档生成签名
+    uri: 接口路径，例如 '/api/generate/webui/text2img'
+    """
     timestamp = str(int(time.time() * 1000))
     signature_nonce = str(uuid.uuid4())
     
-    # 拼接签名原串: uri & timestamp & nonce
+    # 1. 拼接签名原串
     content = '&'.join((uri, timestamp, signature_nonce))
     
-    # HMAC-SHA1 加密
+    # 2. HMAC-SHA1 加密
     digest = hmac.new(
         SECRET_KEY.encode('utf-8'), 
         content.encode('utf-8'), 
         hashlib.sha1
     ).digest()
     
+    # 3. Base64 编码
     sign = base64.urlsafe_b64encode(digest).rstrip(b'=').decode('utf-8')
     
+    # 4. 构造请求头
     headers = {
         "Content-Type": "application/json",
         "AccessKey": ACCESS_KEY,
@@ -52,21 +59,32 @@ def get_liblib_headers(uri):
     return headers
 
 # ==========================================
-# 3. 图像处理函数
+# 3. 图像处理函数 (本地 CPU)
 # ==========================================
 def process_clean_sketch(uploaded_file):
+    """清洗草图：去底色，变黑白线稿"""
     file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
     img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+    
+    # --- ✨ 关键修改：参数优化 ✨ ---
+    # blockSize=31 (保持不变)
+    # C=5 (之前是15。改小这个数值，可以保留更多浅色线条，防止变白纸)
     binary = cv2.adaptiveThreshold(
-        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 15
+        img, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 5
     )
     return Image.fromarray(binary)
 
 def process_multiply(render_img, sketch_img):
+    """正片叠底：把线稿叠在渲染图上"""
+    # 统一尺寸
     if render_img.size != sketch_img.size:
         sketch_img = sketch_img.resize(render_img.size)
+    
+    # 转换模式
     render_img = render_img.convert("RGB")
     sketch_img = sketch_img.convert("RGB")
+    
+    # 执行合成
     return ImageChops.multiply(render_img, sketch_img)
 
 def image_to_base64(pil_image):
@@ -75,70 +93,76 @@ def image_to_base64(pil_image):
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
 # ==========================================
-# 4. API 调用逻辑 (已修正 URI)
+# 4. API 调用逻辑 (修正域名和接口)
 # ==========================================
 def call_liblib_api(prompt, control_image):
-    domain = "https://api.liblib.art"
+    # --- ✨ 关键修改：修正域名 ✨ ---
+    # 之前是 api.liblib.art，针对 WebUI 接口通常是 www.liblib.art
+    domain = "https://www.liblib.art" 
     
-    # ✅ 修正点1：使用截图中的正确接口地址
+    # 接口路径 (基于你的截图)
     submit_uri = "/api/generate/webui/text2img"
     
-    # 准备 ControlNet 图片
+    # 准备图片
     base64_img = image_to_base64(control_image)
     
-    # ✅ 修正点2：构造符合截图结构的 Payload
+    # 构造 Payload
     payload = {
         "templateUuid": MODEL_UUID,
         "generateParams": {
-            "prompt": prompt + ", interior design, furniture, best quality, 8k",
+            "prompt": prompt + ", interior design, furniture, best quality, 8k, masterpiece",
             "steps": 25,
-            "width": 1024, # 注意：Juggernaut XL 建议用 1024x1024
+            "width": 1024, 
             "height": 1024,
             "imgCount": 1,
-            "controlNet": [  # 注意这里是列表 list
+            "controlNet": [
                 {
                     "enabled": True,
-                    "module": "canny",  # 预处理器
-                    "model": "control_v11p_sd15_canny", # ⚠️核心：这里可能需要根据你的底模修改，如果是XL模型，这里要填XL的controlnet模型名
-                    "image": base64_img, # 注意参数名是 image 还是 image_base64，通常 WebUI 接口用 image
+                    "module": "canny", 
+                    "model": "control_v11p_sd15_canny", # 如果用SDXL模型，这里可能需要改，先试用这个
+                    "image": base64_img,
                     "weight": 0.8
                 }
             ]
         }
     }
     
-    # 发起请求
+    # --- 1. 提交任务 ---
     headers = get_liblib_headers(submit_uri)
     
     try:
         response = requests.post(domain + submit_uri, headers=headers, json=payload)
+        
+        # 打印一下返回，方便调试
+        print(f"提交状态: {response.status_code}")
+        print(f"提交返回: {response.text}")
         
         if response.status_code != 200:
             return None, f"提交失败 ({response.status_code}): {response.text}"
             
         data = response.json()
         if data.get('code') != 0:
-            return None, f"API 报错: {data.get('msg')}"
+            return None, f"API 业务报错: {data.get('msg')}"
             
-        generate_uuid = data['data']['generateUuid'] # 注意大小写可能不同，通常是 generateUuid 或 generate_uuid
+        generate_uuid = data['data']['generateUuid']
         
     except Exception as e:
         return None, f"请求异常: {e}"
     
-    # --- 轮询结果 ---
-    # ✅ 修正点3：对应的查询接口通常是这个
-    status_uri = "/api/generate/webui/status" 
+    # --- 2. 轮询结果 ---
+    status_uri = "/api/generate/webui/status"
     
     progress_bar = st.progress(0, text="☁️ 任务已提交，等待 GPU 响应...")
     
-    for i in range(60):
+    for i in range(60): # 轮询 60次
         time.sleep(2)
-        progress_bar.progress((i + 1) / 60, text="☁️ AI 正在渲染...")
+        progress_bar.progress((i + 1) / 60, text=f"☁️ AI 渲染中... ({i*2}s)")
         
+        # 查询接口也要签名
         check_headers = get_liblib_headers(status_uri) 
         
         try:
-            # 注意：generateUuid 作为参数传递
+            # generateUuid 放在 params 里
             check_res = requests.get(
                 domain + status_uri, 
                 headers=check_headers, 
@@ -146,61 +170,80 @@ def call_liblib_api(prompt, control_image):
             )
             res_data = check_res.json()
             
-            # 1=成功, -1=失败
-            if res_data['data']['generateStatus'] == 1: # 注意这里字段名可能是 generateStatus
+            # 状态码: 1=成功, 2=失败/超时 (依据常见 WebUI 接口)
+            status = res_data.get('data', {}).get('generateStatus')
+            
+            if status == 1:
                 progress_bar.progress(1.0, text="渲染完成！")
                 return res_data['data']['images'][0]['imageUrl'], None
-            elif res_data['data']['generateStatus'] == 2: # 2通常是失败/超时
-                return None, "生成失败: " + str(res_data['data'])
-        except:
+            elif status == 2 or status == -1: # 失败状态
+                return None, f"服务端生成失败: {res_data}"
+        except Exception as check_e:
+            print(f"轮询出错: {check_e}")
             pass
             
-    return None, "等待超时"
+    return None, "等待超时 (60秒未完成)"
 
 # ==========================================
-# 5. 界面
+# 5. 网页界面
 # ==========================================
 st.title("🛋️ AI 家具设计工作流")
-st.info("当前接口模式: WebUI 自定义模版")
 
 col_input, col_process = st.columns([1, 2])
 
 with col_input:
-    uploaded_file = st.file_uploader("上传草图", type=["jpg", "png", "jpeg"])
+    st.info("💡 请上传手绘草图，尽量清晰")
+    uploaded_file = st.file_uploader("上传图片", type=["jpg", "png", "jpeg"])
+    
     prompt_text = st.text_area(
         "设计描述", 
         "现代极简风格衣柜，胡桃木纹理，高级灰色调，柔和室内光线，照片级真实感，8k分辨率，大师级室内设计", 
-        height=100
+        height=120
     )
-    run_btn = st.button("🚀 开始生成", type="primary")
+    
+    run_btn = st.button("🚀 开始生成", type="primary", use_container_width=True)
 
 if run_btn and uploaded_file:
     with col_process:
-        with st.status("正在处理...", expanded=True) as status:
-            st.write("🧹 清洗草图...")
+        with st.status("全自动处理中...", expanded=True) as status:
+            
+            # 1. 清洗
+            st.write("1️⃣ 正在清洗草图 (去底色)...")
             uploaded_file.seek(0)
             cleaned_img = process_clean_sketch(uploaded_file)
-            st.image(cleaned_img, width=200, caption="清洗后")
+            st.image(cleaned_img, width=200, caption="清洗后的线稿")
             
-            st.write("☁️ 调用 LiblibAI...")
+            # 2. 调用 AI
+            st.write("2️⃣ 正在调用 LiblibAI 进行渲染...")
             img_url, error = call_liblib_api(prompt_text, cleaned_img)
             
             if error:
-                status.update(label="失败", state="error")
+                status.update(label="生成失败", state="error")
                 st.error(error)
                 st.stop()
             
-            st.write("📥 下载渲染图...")
+            # 3. 下载
+            st.write("3️⃣ 下载渲染结果...")
             generated_response = requests.get(img_url)
             generated_img = Image.open(io.BytesIO(generated_response.content))
             
-            st.write("🎨 正片叠底合成...")
+            # 4. 合成
+            st.write("4️⃣ 正片叠底回填尺寸...")
             final_img = process_multiply(generated_img, cleaned_img)
             
-            status.update(label="✅ 完成！", state="complete")
+            status.update(label="✅ 全部完成！", state="complete")
 
-        st.image(final_img, caption="最终效果", use_column_width=True)
+        # 展示结果
+        st.image(final_img, caption="最终成品图", use_column_width=True)
+        st.caption("💡 手机用户：长按图片可保存到相册")
         
+        # 下载按钮
         buf = io.BytesIO()
         final_img.save(buf, format="JPEG", quality=95)
-        st.download_button("⬇️ 下载原图", buf.getvalue(), "design.jpg", "image/jpeg", type="primary")
+        st.download_button(
+            "⬇️ 下载高清原图", 
+            buf.getvalue(), 
+            "design_final.jpg", 
+            "image/jpeg",
+            type="primary"
+        )
